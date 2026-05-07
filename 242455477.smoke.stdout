@@ -1,0 +1,92 @@
+Sender: LSF System <lsfadmin@lg02e09>
+Subject: Job 242455477: <trace_kin_v2_smoke> in cluster <chimera> Exited
+
+Job <trace_kin_v2_smoke> was submitted from host <li04e04> by user <wangc40> in cluster <chimera> at Thu May  7 17:14:06 2026
+Job was executed on host(s) <8*lg02e09>, in queue <gpu>, as user <wangc40> in cluster <chimera> at Thu May  7 17:14:13 2026
+</hpc/users/wangc40> was used as the home directory.
+</sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE-Kin> was used as the working directory.
+Started at Thu May  7 17:14:13 2026
+Terminated at Thu May  7 17:14:14 2026
+Results reported at Thu May  7 17:14:14 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J trace_kin_v2_smoke
+#BSUB -P acc_DiseaseGeneCell
+#BSUB -q gpu
+#BSUB -R h100nvl
+#BSUB -gpu num=1
+#BSUB -n 8
+#BSUB -R "rusage[mem=8000]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 00:30
+#BSUB -o %J.smoke.stdout
+#BSUB -eo %J.smoke.stderr
+#BSUB -L /bin/bash
+
+# =============================================================================
+# TRACE-Kin v2 smoke test
+# =============================================================================
+# Submit with:
+#     bsub < training/run_v2_smoke_test.lsf
+#
+# Purpose: catch import / config / CUDA-arch problems with the v2 architecture
+# *before* committing to the 14-task rerun array. Runs train_trace_kin.py with
+# a tiny sample (100 rows, 2 epochs) on one fixed dataset so it finishes in a
+# few minutes. Walltime capped at 30 minutes.
+#
+# After this job finishes, chain the rerun array to it:
+#     bsub -w "done(<SMOKE_JOB_ID>)" < training/run_v2_rerun_array.lsf
+# =============================================================================
+
+set -euo pipefail
+# Trace every command to stdout so a silent failure is easy to pinpoint.
+# Remove this `set -x` once the smoke test is reliably green.
+set -x
+
+# --- Environment -------------------------------------------------------------
+ml purge
+# Mount Sinai's /etc/bashrc references unset BASHRCSOURCED; relax -u just here.
+set +u
+source ~/.bashrc
+set -u
+
+# Diagnostics: what modules and conda envs exist before we try to load them.
+module avail anaconda3 2>&1 | head -20 || true
+module avail cuda      2>&1 | head -20 || true
+which conda || true
+conda env list || true
+
+module load anaconda3/2024.06
+source activate test
+module load cuda/12.4.0
+
+(... more ...)
+------------------------------------------------------------
+
+Exited with exit code 2.
+
+Resource usage summary:
+
+    CPU time :                                   0.39 sec.
+    Max Memory :                                 19 MB
+    Average Memory :                             8.33 MB
+    Total Requested Memory :                     64000.00 MB
+    Delta Memory :                               63981.00 MB
+    Max Swap :                                   -
+    Max Processes :                              3
+    Max Threads :                                3
+    Run time :                                   1 sec.
+    Turnaround time :                            8 sec.
+
+The output (if any) follows:
+
+
+
+PS:
+
+Read file <242455477.smoke.stderr> for stderr output of this job.
+
