@@ -28,6 +28,9 @@
 # =============================================================================
 
 set -euo pipefail
+# Trace every command to stdout so a silent failure is easy to pinpoint.
+# Remove this `set -x` once the smoke test is reliably green.
+set -x
 
 # --- Environment -------------------------------------------------------------
 ml purge
@@ -35,6 +38,13 @@ ml purge
 set +u
 source ~/.bashrc
 set -u
+
+# Diagnostics: what modules and conda envs exist before we try to load them.
+module avail anaconda3 2>&1 | head -20 || true
+module avail cuda      2>&1 | head -20 || true
+which conda || true
+conda env list || true
+
 module load anaconda3/2024.06
 source activate test
 module load cuda/12.4.0
