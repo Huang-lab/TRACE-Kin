@@ -1,0 +1,212 @@
+#!/bin/bash
+#BSUB -J trace_kin
+#BSUB -P acc_DiseaseGeneCell
+#BSUB -q gpu
+#BSUB -R h100nvl
+#BSUB -gpu num=1
+#BSUB -n 16
+#BSUB -R "rusage[mem=8000]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 48:00
+#BSUB -o %J.stdout
+#BSUB -eo %J.stderr
+#BSUB -L /bin/bash
+
+# =============================================================================
+# TRACE-Kin parametric LSF launcher
+# =============================================================================
+#
+# Drives training/train_trace_kin.py against either a single dataset or a
+# discovered list of dataset directories. Compared to the legacy launcher this
+# script only exposes the knobs that actually matter for the rebuild:
+# MODEL_VERSION (v1|v2), CONFIG_PATH (selects the config file), POOL_TRAIN_CSVS
+# (cross-dataset pooling), USE_SWA (toggle SWA on top of the config default).
+#
+# Usage:
+#   # Single dataset, v2 + SWA
+#   DATASET_SOURCE=MPEK_dataset SINGLE_DATASET=MPEK_kcat_ESMv1_embedding_random \
+#     MODEL_VERSION=v2 USE_SWA=true bsub < training/run_benchmark.lsf
+#
+#   # All datasets under a source
+#   DATASET_SOURCE=catpred_dataset MODEL_VERSION=v2 bsub < training/run_benchmark.lsf
+#
+#   # v1 baseline rerun (matches historical benchmark)
+#   DATASET_SOURCE=MPEK_dataset SINGLE_DATASET=MPEK_kcat_ESMv1_embedding_random \
+#     MODEL_VERSION=v1 CONFIG_PATH=training/config_v1.json \
+#     bsub < training/run_benchmark.lsf
+#
+# The historical 1,847-config benchmark in trace_doc/kinetic_regress_benchmark.csv
+# was produced with MODEL_VERSION=v1 (no SWA, no pooling). v2 + SWA + pooling
+# is the redesign rerun and lands in TRACE_Kin_Results_v2/.
+# =============================================================================
+
+set -euo pipefail
+
+# --- Environment -------------------------------------------------------------
+ml purge
+source ~/.bashrc
+module load anaconda3/2024.06
+source activate test
+module load cuda/12.4.0
+export RAYON_NUM_THREADS=4
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# --- Knobs (env-var driven) --------------------------------------------------
+ENZYME_BASE="/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset"
+DATASET_SOURCE="${DATASET_SOURCE:-}"          # e.g. catpred_dataset, EITLEM_dataset, MPEK_dataset, inhouse_dataset
+SINGLE_DATASET="${SINGLE_DATASET:-}"          # e.g. MPEK_kcat_ESMv1_embedding_random
+FILTER="${FILTER:-}"                          # name substring filter
+RESULT_BASE="${RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v2}"
+SKIP_COMPLETED="${SKIP_COMPLETED:-true}"
+
+MODEL_VERSION="${MODEL_VERSION:-v2}"
+CONFIG_PATH="${CONFIG_PATH:-}"
+USE_SWA="${USE_SWA:-}"
+POOL_TRAIN_CSVS="${POOL_TRAIN_CSVS:-}"
+
+DEVICE="${DEVICE:-cuda:0}"
+EPOCHS="${EPOCHS:-100}"
+BATCH_SIZE="${BATCH_SIZE:-16}"
+SEED="${SEED:-1}"
+LRATE="${LRATE:-1e-4}"
+TASK_TYPE="${TASK_TYPE:-regression}"
+
+PROTEIN_COL="${PROTEIN_COL:-Sequence}"
+FEATURE_COL="${FEATURE_COL:-protein_features}"
+LIGAND_COL="${LIGAND_COL:-Smiles}"
+LABEL_COL="${LABEL_COL:-Label}"
+
+# Default config follows model version unless explicitly overridden.
+if [ -z "$CONFIG_PATH" ]; then
+    if [ "$MODEL_VERSION" = "v1" ]; then
+        CONFIG_PATH="training/config_v1.json"
+    else
+        CONFIG_PATH="training/config_v2.json"
+    fi
+fi
+
+# Resolve search directory.
+if [ -n "$DATASET_SOURCE" ]; then
+    SEARCH_DIR="$ENZYME_BASE/$DATASET_SOURCE"
+else
+    SEARCH_DIR="$ENZYME_BASE"
+fi
+
+# --- Banner ------------------------------------------------------------------
+echo "=========================================="
+echo "TRACE-Kin Benchmark Launcher"
+echo "=========================================="
+echo "Date:            $(date)"
+echo "Search dir:      $SEARCH_DIR"
+echo "Result base:     $RESULT_BASE"
+echo "Model version:   $MODEL_VERSION"
+echo "Config:          $CONFIG_PATH"
+echo "Use SWA:         ${USE_SWA:-config default}"
+echo "Pool train CSVs: ${POOL_TRAIN_CSVS:-(none)}"
+echo "Device:          $DEVICE"
+echo "Epochs:          $EPOCHS"
+echo "Batch size:      $BATCH_SIZE"
+echo "Seed:            $SEED"
+echo "=========================================="
+
+python --version
+echo "Python: $(which python)"
+
+# --- GPU smoke test ----------------------------------------------------------
+python - <<'PY'
+import sys, torch
+if not torch.cuda.is_available():
+    print("ERROR: CUDA not available."); sys.exit(86)
+name = torch.cuda.get_device_name(0)
+cap = torch.cuda.get_device_capability(0)
+print(f"CUDA device: {name}, sm_{cap[0]}{cap[1]}")
+PY
+
+# --- Task flag ---------------------------------------------------------------
+case "$TASK_TYPE" in
+    regression)      TASK_FLAG="--regression_task" ;;
+    classification)  TASK_FLAG="--classification_task" ;;
+    mclassification) TASK_FLAG="--mclassification_task ${MCLASS_N:-3}" ;;
+    *) echo "ERROR: Unknown task type: $TASK_TYPE"; exit 1 ;;
+esac
+
+EXTRA_ARGS=()
+if [ -n "$MODEL_VERSION" ]; then EXTRA_ARGS+=(--model_version "$MODEL_VERSION"); fi
+if [ "$USE_SWA" = "true" ]; then EXTRA_ARGS+=(--use_swa); fi
+if [ "$USE_SWA" = "false" ]; then EXTRA_ARGS+=(--no_swa); fi
+if [ -n "$POOL_TRAIN_CSVS" ]; then EXTRA_ARGS+=(--pool_train_csvs "$POOL_TRAIN_CSVS"); fi
+
+# --- Iterate over datasets ---------------------------------------------------
+TOTAL=0
+SUCCESS=0
+SKIPPED=0
+FAILED=()
+
+find_datasets() {
+    if [ -n "$SINGLE_DATASET" ]; then
+        find "$SEARCH_DIR" -maxdepth 2 -type d -name "$SINGLE_DATASET" 2>/dev/null
+    elif [ -n "$DATASET_SOURCE" ]; then
+        find "$SEARCH_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort
+    else
+        find "$SEARCH_DIR" -maxdepth 2 -mindepth 2 -type d 2>/dev/null | sort
+    fi
+}
+
+for DATASET_DIR in $(find_datasets); do
+    DATASET_NAME=$(basename "$DATASET_DIR")
+    if [ -n "$FILTER" ] && [[ "$DATASET_NAME" != *"$FILTER"* ]]; then continue; fi
+
+    HAS_TRAIN=false; HAS_TEST=false
+    for ext in csv parquet tsv; do
+        [ -f "$DATASET_DIR/train.$ext" ] && HAS_TRAIN=true
+        [ -f "$DATASET_DIR/test.$ext"  ] && HAS_TEST=true
+    done
+    if [ "$HAS_TRAIN" = false ] || [ "$HAS_TEST" = false ]; then continue; fi
+
+    PARENT_NAME=$(basename "$(dirname "$DATASET_DIR")")
+    CURRENT_RESULT="$RESULT_BASE/$PARENT_NAME/$DATASET_NAME"
+
+    if [ "$SKIP_COMPLETED" = "true" ] && ls "$CURRENT_RESULT"/test_prediction_seed*.csv 1>/dev/null 2>&1; then
+        SKIPPED=$((SKIPPED + 1))
+        echo "SKIP $DATASET_NAME (result exists)"
+        continue
+    fi
+
+    TOTAL=$((TOTAL + 1))
+    echo ""
+    echo "[$TOTAL] $DATASET_NAME -> $CURRENT_RESULT"
+
+    if python training/train_trace_kin.py \
+        --datafolder "$DATASET_DIR" \
+        --result_path "$CURRENT_RESULT" \
+        --config_path "$CONFIG_PATH" \
+        --device "$DEVICE" \
+        --epochs "$EPOCHS" \
+        --batch_size "$BATCH_SIZE" \
+        --seed "$SEED" \
+        --lrate "$LRATE" \
+        --protein_col "$PROTEIN_COL" \
+        --feature_col "$FEATURE_COL" \
+        --ligand_col "$LIGAND_COL" \
+        --label_col "$LABEL_COL" \
+        $TASK_FLAG \
+        "${EXTRA_ARGS[@]}"
+    then
+        SUCCESS=$((SUCCESS + 1))
+        echo "OK $DATASET_NAME"
+    else
+        FAILED+=("$DATASET_NAME")
+        echo "FAIL $DATASET_NAME"
+    fi
+done
+
+echo ""
+echo "=========================================="
+echo "Summary: attempted=$TOTAL succeeded=$SUCCESS failed=${#FAILED[@]} skipped=$SKIPPED"
+if [ ${#FAILED[@]} -gt 0 ]; then
+    echo "Failed datasets:"
+    for f in "${FAILED[@]}"; do echo "  - $f"; done
+fi
+echo "=========================================="
+
+[ ${#FAILED[@]} -gt 0 ] && exit 1 || exit 0

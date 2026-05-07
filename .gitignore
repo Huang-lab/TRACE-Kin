@@ -1,0 +1,79 @@
+# =============================================================================
+# .gitignore — TRACE-Kin / PSICHIC_Kin
+# Public surface only. Heavy outputs (model weights, per-sample interpretations,
+# job logs) live on HPC and should never be committed.
+# =============================================================================
+
+# --- Local archive (kept on disk for reference, not for public history) ----
+to_remove/
+
+# --- Python build / cache --------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtualenvs / package managers ----------------------------------------
+.venv/
+venv/
+env/
+.env
+
+# --- Editor / OS clutter ---------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*~
+
+# --- Notebook clutter ------------------------------------------------------
+.ipynb_checkpoints/
+
+# --- Model weights & preprocessing caches ---------------------------------
+# Model weights are large and produced by HPC training runs; checkpoint paths
+# are documented in PROJECT.md but the files themselves never enter git.
+*.pt
+*.pth
+*.ckpt
+*.bin
+
+# --- LSF job outputs (TRACKED, not ignored) -------------------------------
+# *.stdout / *.stderr / *.smoke.stdout / *.smoke.stderr from run_benchmark.lsf
+# and the array LSFs are intentionally kept under version control so the HPC
+# (which runs the jobs and writes the logs) can push results to GitHub for the
+# local clone to pull. Workflow: HPC `git add *.stdout *.stderr && git push`,
+# local `git pull`. Watch repo size — if a single log file exceeds ~50 MB,
+# truncate it on HPC before committing or move that file to Git LFS.
+
+# --- Generated figures (regenerated locally from clean CSV) ---------------
+# Keep figures/output/ out of git so the repo stays small. Reviewers can
+# regenerate on demand: `python figures/generate_figures.py`.
+figures/output/
+
+# --- Heavy result trees ----------------------------------------------------
+# These directories live on HPC; they're listed here in case anyone rsync's
+# them down for local inspection — they should not be committed.
+TRACE_Kin_Results/
+TRACE_Kin_Results_v1_repro/
+TRACE_Kin_Results_v2/
+
+# --- Runtime artifacts -----------------------------------------------------
+submitted_jobs.txt
+data/benchmark/_smoke/
+
+# =============================================================================
+# Explicitly tracked artifacts (DO commit these — listed for reviewer clarity):
+#   - data/benchmark/kinetic_regress_benchmark_clean.csv
+#   - data/benchmark/normalization_log.md
+#   - data/benchmark/significance.csv
+#   - data/benchmark/trace_kin_v2_results.csv (after rerun completes)
+#   - data/benchmark/promotion_gate_decision.md
+#   - data/benchmark/improvement_summary.md
+#   - data/benchmark/tables/*.md and *.tex
+# =============================================================================
