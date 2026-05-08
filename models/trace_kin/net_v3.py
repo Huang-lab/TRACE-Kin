@@ -193,6 +193,12 @@ class TraceKinV3(nn.Module):
 
         return pred_combined, cls_pred, mcls_pred, sp_loss, o_loss, cl_loss, attention_dict
 
+    def temperature_clamp(self):
+        # Trainer calls this every iteration; v1's implementation is a no-op
+        # (the legacy logit_scale clamping is commented out there). v3 has no
+        # learnable temperature either, so this stays a no-op.
+        pass
+
     def configure_optimizers(self, weight_decay, learning_rate, betas, eps, amsgrad):
         """Same decay/no-decay split as v1, but iterates over v3's modules.
 
