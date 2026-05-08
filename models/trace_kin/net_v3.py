@@ -164,6 +164,15 @@ class TraceKinV3(nn.Module):
             save_cluster=save_cluster,
         )
 
+        # v3 drops the MinCut auxiliary losses — they were a major reason v1 lost
+        # to RF on catalytic kinetics (PROJECT.md §6 cause #3). The trainer
+        # weights them at 1.0, so leaving them non-zero makes the optimizer
+        # minimize aux-loss instead of regression loss. Zero them out.
+        zero_loss = pred_gnn.new_zeros(()) if pred_gnn is not None else sp_loss.new_zeros(())
+        sp_loss = zero_loss
+        o_loss = zero_loss
+        cl_loss = zero_loss
+
         # If we're not in regression mode (rare for kinetic tasks), return the
         # GNN result unchanged — the gate is only meaningful for regression.
         if pred_gnn is None or morgan_fp is None or maccs_fp is None:
