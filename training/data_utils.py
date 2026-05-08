@@ -384,7 +384,7 @@ def virtual_screening(screen_df, model, data_loader, result_path, save_interpret
             reg_pred, cls_pred, mcls_pred, sp_loss, o_loss, cl_loss, attention_dict = model(
                     # Molecule
                     mol_x=data.mol_x, mol_x_feat=data.mol_x_feat, bond_x=data.mol_edge_attr,
-                    atom_edge_index=data.mol_edge_index, clique_x=data.clique_x, 
+                    atom_edge_index=data.mol_edge_index, clique_x=data.clique_x,
                     clique_edge_index=data.clique_edge_index, atom2clique_index=data.atom2clique_index,
                     # Protein
                     residue_x=data.prot_node_aa, residue_evo_x=data.prot_node_evo,
@@ -392,6 +392,10 @@ def virtual_screening(screen_df, model, data_loader, result_path, save_interpret
                     residue_edge_weight=data.prot_edge_weight,
                     # Mol-Protein Interaction batch
                     mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
+                    # v3 RF-head fingerprints; v1 ignores these. Without them, v3
+                    # returns the bare GNN head whose outputs are only sensible
+                    # when blended with the RF head — producing wild test RMSE.
+                    morgan_fp=getattr(data, 'morgan_fp', None), maccs_fp=getattr(data, 'maccs_fp', None),
                     # save_cluster
                     save_cluster=save_cluster
             )

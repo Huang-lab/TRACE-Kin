@@ -173,10 +173,24 @@ class TraceKinV3(nn.Module):
         o_loss = zero_loss
         cl_loss = zero_loss
 
-        # If we're not in regression mode (rare for kinetic tasks), return the
-        # GNN result unchanged — the gate is only meaningful for regression.
-        if pred_gnn is None or morgan_fp is None or maccs_fp is None:
+        # Non-regression tasks: the gate is only meaningful when there's a
+        # regression head to mix. Return whatever the GNN produced as-is.
+        if pred_gnn is None:
             return pred_gnn, cls_pred, mcls_pred, sp_loss, o_loss, cl_loss, attention_dict
+
+        # Regression task — fingerprints are required. Don't silently fall
+        # back to pred_gnn alone: pred_gnn is co-calibrated with pred_rf
+        # during training (the gate handles calibration jointly), so it
+        # produces nonsense predictions on its own. Raise loudly so any
+        # caller that forgets to pass fingerprints gets a clear error
+        # instead of silently-bad RMSE.
+        if morgan_fp is None or maccs_fp is None:
+            raise RuntimeError(
+                "TraceKinV3 requires morgan_fp and maccs_fp kwargs for "
+                "regression. All model() call sites in trainer.py, "
+                "data_utils.virtual_screening, and inference/ must pass "
+                "them. v1 silently ignores these kwargs; v3 does not."
+            )
 
         # 2. RF-style head input: mean-pool the raw 1280-dim embedding per
         #    sample, then concatenate ligand fingerprints.
