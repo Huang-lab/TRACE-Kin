@@ -1,14 +1,15 @@
 #!/usr/bin/env python
 """TRACE-Kin training entry point.
 
-Slim port of the legacy ``train_psichic_embedding.py`` that drives the v1 / v2
-architecture switch and the v2 cross-dataset pooling. Tier 1 and Tier 2
-hyperparameter knobs that the failed ablation explored (``--patience``,
-``--warmup_iters``, ``--min_lrate``, ``--lr_decay_iters``, ``--dropout``,
+Drives the v1 / v3 architecture switch and the cross-dataset pooling that
+applies to both. (The earlier v2 attempt regressed on 9 of 11 reruns and was
+removed; see PROJECT.md history.) Tier 1 and Tier 2 hyperparameter knobs
+that the failed ablation explored (``--patience``, ``--warmup_iters``,
+``--min_lrate``, ``--lr_decay_iters``, ``--dropout``,
 ``--use_gated_prot_fusion``, ``--deep_regression_head``,
 ``--learnable_aux_loss``) are intentionally removed — they did not move the
 needle and are now dead weight. The only training-time switches that matter
-for the rerun are ``--model_version``, ``--use_swa``, and ``--pool_train_csvs``.
+are ``--model_version``, ``--use_swa``, and ``--pool_train_csvs``.
 
 The triple DataFrame load bug from the legacy script (load for embedding
 detection, load for seq2feat, load for create_data_loaders) is fixed: each
@@ -44,7 +45,7 @@ from training.trainer import Trainer
 
 # Both architecture variants are exposed by the package; we instantiate one
 # based on the config's ``model_version`` field.
-from models.trace_kin import TraceKinV1, TraceKinV2
+from models.trace_kin import TraceKinV1, TraceKinV3
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +53,7 @@ from models.trace_kin import TraceKinV1, TraceKinV2
 # ---------------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train TRACE-Kin (v1 baseline or v2 redesign) on a kinetic-regression dataset.",
+        description="Train TRACE-Kin (v1 baseline or v3 dual-head) on a kinetic-regression dataset.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -61,7 +62,7 @@ def parse_args() -> argparse.Namespace:
                         help="Primary dataset folder (must contain train.{parquet,csv} and test.{parquet,csv}).")
     parser.add_argument("--result_path", type=str, required=True,
                         help="Where to write checkpoints, predictions, logs.")
-    parser.add_argument("--config_path", type=str, default="training/config_v2.json",
+    parser.add_argument("--config_path", type=str, default="training/config_v3.json",
                         help="Path to model config JSON.")
     parser.add_argument("--protein_col", type=str, default="Sequence")
     parser.add_argument("--feature_col", type=str, default="protein_features")
@@ -89,10 +90,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mclassification_task", type=int, default=0)
 
     # Architecture / training behaviour switches
-    parser.add_argument("--model_version", type=str, choices=["v1", "v2"], default=None,
+    parser.add_argument("--model_version", type=str, choices=["v1", "v3"], default=None,
                         help="Override config 'model_version'. Defaults to whatever the config file specifies.")
     parser.add_argument("--use_swa", action="store_true", default=False,
-                        help="Enable SWA (overrides config swa.use_swa). Recommended for v2.")
+                        help="Enable SWA (overrides config swa.use_swa).")
     parser.add_argument("--no_swa", action="store_true", default=False,
                         help="Disable SWA even if the config enables it.")
 
@@ -359,7 +360,7 @@ def make_loaders(train_df, test_df, val_df, ligand_dict, protein_dict,
 # Model factory
 # ---------------------------------------------------------------------------
 def build_model(model_config: dict, mol_deg, prot_deg, device: str):
-    """Instantiate v1 or v2 from the config."""
+    """Instantiate v1 or v3 from the config."""
     version = model_config.get("model_version", "v1")
     params = model_config["params"]
     tasks = model_config["tasks"]
@@ -392,12 +393,15 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str):
             deep_regression_head=params.get("deep_regression_head", False),
             learnable_aux_loss=params.get("learnable_aux_loss", False),
         )
-    elif version == "v2":
-        model = TraceKinV2(
+    elif version == "v3":
+        model = TraceKinV3(
             mol_deg, prot_deg,
             **common_kwargs,
-            aa_residual_weight=params.get("aa_residual_weight", 0.1),
-            shortcut_hidden=params.get("shortcut_hidden", 400),
+            morgan_dim=params.get("morgan_dim", 2048),
+            maccs_dim=params.get("maccs_dim", 167),
+            rf_head_hidden=tuple(params.get("rf_head_hidden", [512, 128])),
+            gate_hidden=params.get("gate_hidden", 64),
+            gate_init_bias=params.get("gate_init_bias", 0.0),
         )
     else:
         raise ValueError(f"Unknown model_version: {version!r}")

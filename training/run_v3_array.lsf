@@ -1,5 +1,5 @@
 #!/bin/bash
-#BSUB -J trace_kin_v2[1-14]
+#BSUB -J trace_kin_v3[1-14]
 #BSUB -P acc_DiseaseGeneCell
 #BSUB -q gpu
 #BSUB -R h100nvl
@@ -13,18 +13,25 @@
 #BSUB -L /bin/bash
 
 # =============================================================================
-# TRACE-Kin v2 rerun — LSF job array
+# TRACE-Kin v3 rerun — LSF job array
 # =============================================================================
 # Submit with:
-#     bsub < training/run_v2_rerun_array.lsf
+#     bsub < training/run_v3_array.lsf
 #
 # Or chain off the smoke test (recommended):
-#     bsub -w "done(<SMOKE_JOB_ID>)" < training/run_v2_rerun_array.lsf
+#     bsub -w "done(<SMOKE_JOB_ID>)" < training/run_v3_array.lsf
 #
-# LSF expands #BSUB -J trace_kin_v2[1-14] into 14 array tasks, each with a
+# For the multi-seed ensemble (the paper config), submit additional seeds in
+# parallel after the SEED=1 array completes (or alongside, as separate jobs):
+#     SEED=2 bsub -J "trace_kin_v3_s2[1-14]" < training/run_v3_array.lsf
+#     SEED=3 bsub -J "trace_kin_v3_s3[1-14]" < training/run_v3_array.lsf
+# After all seeds finish, analysis/aggregate_results.py averages predictions
+# across seeds before computing RMSE.
+#
+# LSF expands #BSUB -J trace_kin_v3[1-14] into 14 array tasks, each with a
 # distinct ${LSB_JOBINDEX} in 1..14. The body looks up the per-index
 # (dataset_source, dataset_name, pool_paths) tuple from the inline table below
-# and invokes train_trace_kin.py with model_version=v2 + SWA.
+# and invokes train_trace_kin.py with model_version=v3.
 #
 # The 14 tasks correspond to:
 #   * 12 RF-gap targets (catalytic kinetics where v1 trails RF by 1.4%–8.7%)
@@ -49,8 +56,8 @@ export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 
 # --- Knobs (env overrides) ---------------------------------------------------
 ENZYME_BASE="${ENZYME_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset}"
-RESULT_BASE="${RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v2}"
-CONFIG_PATH="${CONFIG_PATH:-training/config_v2.json}"
+RESULT_BASE="${RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3}"
+CONFIG_PATH="${CONFIG_PATH:-training/config_v3.json}"
 EPOCHS="${EPOCHS:-100}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 SEED="${SEED:-1}"
@@ -101,14 +108,14 @@ fi
 
 # --- Banner ------------------------------------------------------------------
 echo "=========================================="
-echo "TRACE-Kin v2 array task ${LSB_JOBINDEX}/14"
+echo "TRACE-Kin v3 array task ${LSB_JOBINDEX}/14"
 echo "=========================================="
 echo "Date:        $(date)"
 echo "Dataset:     $DATASET_DIR"
 echo "Result:      $RESULT_PATH"
 echo "Config:      $CONFIG_PATH"
 echo "Pool CSVs:   ${POOL_TRAIN_CSVS:-(none)}"
-echo "Model:       v2 + SWA"
+echo "Model:       v3 (dual-head + learned gate)"
 echo "Epochs:      $EPOCHS, batch=$BATCH_SIZE, seed=$SEED, lr=$LRATE"
 echo "=========================================="
 
@@ -124,9 +131,16 @@ print(f"CUDA device: {name}, sm_{cap[0]}{cap[1]}")
 PY
 
 # --- Train -------------------------------------------------------------------
+# --force_rebuild because the cached ligand.pt from prior v1/v2 runs may not
+# contain the new Morgan + MACCS fingerprints required by v3's RF-style head.
+# After the first v3 run on a given dataset, the rebuilt cache is
+# fingerprint-aware and subsequent runs (e.g. SEED=2, SEED=3) can omit it.
 EXTRA_ARGS=()
 if [ -n "$POOL_TRAIN_CSVS" ]; then
     EXTRA_ARGS+=(--pool_train_csvs "$POOL_TRAIN_CSVS")
+fi
+if [ "$SEED" = "1" ]; then
+    EXTRA_ARGS+=(--force_rebuild)
 fi
 
 python training/train_trace_kin.py \
@@ -143,8 +157,7 @@ python training/train_trace_kin.py \
     --ligand_col Smiles \
     --label_col Label \
     --regression_task \
-    --model_version v2 \
-    --use_swa \
+    --model_version v3 \
     "${EXTRA_ARGS[@]}"
 
 # --- Result check ------------------------------------------------------------

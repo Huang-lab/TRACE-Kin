@@ -230,14 +230,17 @@ class TraceKinV1(torch.nn.Module):
 
     def forward(self,
                 # Molecule
-                mol_x, mol_x_feat, bond_x, atom_edge_index, 
+                mol_x, mol_x_feat, bond_x, atom_edge_index,
                 clique_x, clique_edge_index, atom2clique_index, # drug cliques
                 # Protein
-                residue_x, residue_evo_x, residue_edge_index, residue_edge_weight, 
+                residue_x, residue_evo_x, residue_edge_index, residue_edge_weight,
                 # Mol-Protein Interaction batch
                 mol_batch=None, prot_batch=None, clique_batch=None,
-                ## only if you're interested in clustering algorithm 
-                save_cluster = False):
+                ## only if you're interested in clustering algorithm
+                save_cluster = False,
+                # v3 dual-head fingerprints (ignored by v1; accepted so the same
+                # trainer call site works for both architectures)
+                morgan_fp=None, maccs_fp=None):
         # Init variables        
         reg_pred = None
         cls_pred = None

@@ -4,21 +4,16 @@ Two architecture variants are exposed:
 
 - :class:`TraceKinV1` — the original PSICHIC architecture that produced the
   1,847-config benchmark in ``trace_doc/kinetic_regress_benchmark.csv``. Frozen
-  baseline used for A/B comparison.
-- :class:`TraceKinV2` — the redesigned architecture with an embedding shortcut
-  branch, attention-based residue pooling, and a fixed-weight AA residual
-  fusion. Targets the RF gap on catalytic kinetics (kcat/Km/Kd/kcat_Km).
+  baseline used for A/B comparison and the GNN backbone of v3.
+- :class:`TraceKinV3` — dual-head architecture: v1's GNN runs alongside an
+  RF-style head (mean-pooled raw protein embedding ⊕ Morgan + MACCS ligand
+  fingerprints), combined via a learned per-sample sigmoid gate. Targets the
+  RF gap on catalytic kinetics while preserving v1's Ki advantage.
 
-The full root-cause analysis behind the v2 design lives in ``PROJECT.md``.
+The full design rationale lives in ``PROJECT.md``.
 """
 
 from .net_v1 import TraceKinV1
+from .net_v3 import TraceKinV3
 
-# net_v2 may be absent until Phase 3 lands the redesigned architecture; tolerate
-# its absence so v1-only consumers (e.g. the inference API loading legacy
-# checkpoints) can import this package without pulling in v2.
-try:
-    from .net_v2 import TraceKinV2  # noqa: F401
-    __all__ = ["TraceKinV1", "TraceKinV2"]
-except ImportError:
-    __all__ = ["TraceKinV1"]
+__all__ = ["TraceKinV1", "TraceKinV3"]

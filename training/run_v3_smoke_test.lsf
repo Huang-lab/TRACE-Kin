@@ -1,5 +1,5 @@
 #!/bin/bash
-#BSUB -J trace_kin_v2_smoke
+#BSUB -J trace_kin_v3_smoke
 #BSUB -P acc_DiseaseGeneCell
 #BSUB -q gpu
 #BSUB -R h100nvl
@@ -8,23 +8,23 @@
 #BSUB -R "rusage[mem=8000]"
 #BSUB -R "span[hosts=1]"
 #BSUB -W 00:30
-#BSUB -o %J.smoke.stdout
-#BSUB -eo %J.smoke.stderr
+#BSUB -o %J.v3_smoke.stdout
+#BSUB -eo %J.v3_smoke.stderr
 #BSUB -L /bin/bash
 
 # =============================================================================
-# TRACE-Kin v2 smoke test
+# TRACE-Kin v3 smoke test
 # =============================================================================
 # Submit with:
-#     bsub < training/run_v2_smoke_test.lsf
+#     bsub < training/run_v3_smoke_test.lsf
 #
-# Purpose: catch import / config / CUDA-arch problems with the v2 architecture
-# *before* committing to the 14-task rerun array. Runs train_trace_kin.py with
-# a tiny sample (100 rows, 2 epochs) on one fixed dataset so it finishes in a
-# few minutes. Walltime capped at 30 minutes.
+# Purpose: catch import / config / fingerprint / gate problems with the v3
+# dual-head architecture *before* committing to the 14-task rerun array. Runs
+# train_trace_kin.py with a tiny sample (100 rows, 2 epochs) on one fixed
+# dataset so it finishes in a few minutes. Walltime capped at 30 minutes.
 #
 # After this job finishes, chain the rerun array to it:
-#     bsub -w "done(<SMOKE_JOB_ID>)" < training/run_v2_rerun_array.lsf
+#     bsub -w "done(<SMOKE_JOB_ID>)" < training/run_v3_array.lsf
 # =============================================================================
 
 # --- Environment -------------------------------------------------------------
@@ -46,12 +46,12 @@ export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 # --- Knobs (override via env if desired) ------------------------------------
 ENZYME_BASE="${ENZYME_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset}"
 SMOKE_DATASET_DIR="${SMOKE_DATASET_DIR:-$ENZYME_BASE/MPEK_dataset/MPEK_kcat_ESMv1_embedding_random}"
-SMOKE_RESULT_BASE="${SMOKE_RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v2/_smoke}"
-CONFIG_PATH="${CONFIG_PATH:-training/config_v2.json}"
+SMOKE_RESULT_BASE="${SMOKE_RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3/_smoke}"
+CONFIG_PATH="${CONFIG_PATH:-training/config_v3.json}"
 
 # --- Banner ------------------------------------------------------------------
 echo "=========================================="
-echo "TRACE-Kin v2 Smoke Test"
+echo "TRACE-Kin v3 Smoke Test"
 echo "=========================================="
 echo "Date:               $(date)"
 echo "Dataset:            $SMOKE_DATASET_DIR"
@@ -78,7 +78,10 @@ PY
 rm -rf "$SMOKE_RESULT_BASE"
 mkdir -p "$SMOKE_RESULT_BASE"
 
-# --- Run a tiny v2 training -------------------------------------------------
+# --- Run a tiny v3 training -------------------------------------------------
+# --force_rebuild because the cached ligand.pt from prior runs may not contain
+# the new Morgan + MACCS fingerprints. After the first v3 run, the rebuilt
+# cache is fingerprint-aware and subsequent runs can omit --force_rebuild.
 python training/train_trace_kin.py \
     --datafolder "$SMOKE_DATASET_DIR" \
     --result_path "$SMOKE_RESULT_BASE" \
@@ -89,8 +92,7 @@ python training/train_trace_kin.py \
     --seed 1 \
     --lrate 1e-4 \
     --regression_task \
-    --model_version v2 \
-    --use_swa \
+    --model_version v3 \
     --sample_train 100 \
     --sample_test 50 \
     --force_rebuild
@@ -101,7 +103,7 @@ if ls "$SMOKE_RESULT_BASE"/test_prediction_seed*.csv 1>/dev/null 2>&1; then
     echo "=========================================="
     echo "SMOKE TEST: PASS"
     echo "Result file: $(ls "$SMOKE_RESULT_BASE"/test_prediction_seed*.csv)"
-    echo "Next: bsub -w \"done($LSB_JOBID)\" < training/run_v2_rerun_array.lsf"
+    echo "Next: bsub -w \"done($LSB_JOBID)\" < training/run_v3_array.lsf"
     echo "=========================================="
     exit 0
 else
@@ -109,7 +111,7 @@ else
     echo "=========================================="
     echo "SMOKE TEST: FAIL"
     echo "No test_prediction_seed*.csv produced under $SMOKE_RESULT_BASE."
-    echo "Inspect $LSB_JOBID.smoke.stderr before submitting the rerun array."
+    echo "Inspect $LSB_JOBID.v3_smoke.stderr before submitting the rerun array."
     echo "=========================================="
     exit 1
 fi

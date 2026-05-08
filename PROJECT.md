@@ -40,7 +40,7 @@ substrate to reason from. The "graph-to-reasoning" thesis in
 [trace_doc/TRACE_research_design.md](trace_doc/TRACE_research_design.md)
 requires this backbone to produce competitive predictions — currently v1
 does not on most catalytic kinetics (see §6), which is the core problem
-the v2 redesign tackles. See
+the v3 redesign tackles. See
 [trace_doc/TRACE_implementation_plan.md](trace_doc/TRACE_implementation_plan.md)
 section 1A for the official next-step list this repo executes.
 
@@ -57,13 +57,23 @@ section 1A for the official next-step list this repo executes.
   of 6 regressed or below the 0.02 promotion gate). The next-phase gate
   decision shut Phase 3 down. All ablation scaffolding is archived under
   `to_remove/tier1_failed/`.
-* **v2 redesign in progress.** This rebuild adds a new architecture
-  (`models/trace_kin/net_v2.py`) targeting the structural reasons RF beats
-  PSICHIC on catalytic tasks. The v2 rerun on 14 selected datasets is
-  ready to submit (`training/rerun_12_datasets.sh`); results decide whether
-  paper figures are produced.
+* **v2 abandoned.** A first redesign (embedding-shortcut concatenation +
+  attention pooling + 0.1·prot_aa fusion + SWA) ran on 11 of 14 tasks and
+  regressed v1 on 9 of 11; both Ki preservation guards failed. Root cause:
+  unconditional concatenation of the shortcut features into the regression
+  head couldn't learn to ignore noisy paths per sample. v2 files have been
+  removed from the codebase; reflog and prior commits retain the history if
+  needed.
+* **v3 in progress.** Dual-head architecture (`models/trace_kin/net_v3.py`):
+  v1's GNN runs alongside an RF-style head (mean-pooled raw protein
+  embedding ⊕ Morgan + MACCS ligand fingerprints), combined via a *learned
+  per-sample sigmoid gate* α. The gate makes the v2 mistake impossible —
+  the model picks GNN vs RF features per sample. Single goal: beat RF on
+  ≥3 of 4 catalytic kinetics. v1 cross-attention scores are preserved for
+  downstream TRACE-Reason / TRACE-Gen interpretability. Multi-seed ensemble
+  (K=3) is the paper config since RF gets bagging for free.
 * **Packaging deliverables prepared.** CSV cleanup, table generation,
-  figure generation, significance testing, and v2-vs-v1 aggregation are
+  figure generation, significance testing, and v3-vs-v1 aggregation are
   all wired up but **gated** on the promotion-gate verdict.
 
 ---
@@ -88,14 +98,14 @@ TRACE_Kin/
 │       ├── normalization_log.md
 │       ├── tables/                     # main + supplementary tables (md + tex)
 │       ├── significance.csv            # Wilcoxon test results
-│       ├── trace_kin_v2_results.csv    # v2 rerun aggregated (after HPC run)
+│       ├── trace_kin_v3_results.csv    # v3 rerun aggregated (after HPC run)
 │       └── promotion_gate_decision.md  # PASS/FAIL verdict
 │
 ├── models/
 │   └── trace_kin/                      # both architecture variants
 │       ├── __init__.py
 │       ├── net_v1.py                   # frozen baseline (renamed from PSICHIC's `net`)
-│       ├── net_v2.py                   # redesigned architecture (Phase 3 of this plan)
+│       ├── net_v3.py                   # dual-head architecture (v1 GNN + RF head + learned gate)
 │       ├── layers.py
 │       ├── protein_pool.py             # MinCut pooling — used by v1 only
 │       ├── drug_pool.py
@@ -106,7 +116,7 @@ TRACE_Kin/
 │   ├── clean_benchmark.py
 │   ├── generate_tables.py
 │   ├── significance_tests.py
-│   ├── aggregate_v2_results.py
+│   ├── aggregate_results.py
 │   └── promotion_gate.py
 │
 ├── figures/
@@ -118,7 +128,7 @@ TRACE_Kin/
 │   └── confidence.py
 │
 ├── training/                           # slim, focused training pipeline
-│   ├── train_trace_kin.py              # main entry; supports --model_version v1|v2
+│   ├── train_trace_kin.py              # main entry; supports --model_version v1|v3
 │   ├── trainer.py                      # adds SWA support to the legacy Trainer
 │   ├── dataset.py                      # ProteinMoleculeDataset
 │   ├── data_utils.py                   # DataLoader, samplers, virtual_screening
@@ -127,9 +137,11 @@ TRACE_Kin/
 │   ├── protein_init.py                 # ESM2-at-runtime variant (kept for completeness)
 │   ├── metrics.py
 │   ├── config_v1.json                  # exact config that produced the historical benchmark
-│   ├── config_v2.json                  # v2 redesign config
+│   ├── config_v3.json                  # v3 dual-head config
 │   ├── run_benchmark.lsf               # parametric LSF launcher
-│   └── rerun_12_datasets.sh            # submits the 14 v2 rerun jobs
+│   ├── run_v3_smoke_test.lsf           # quick v3 smoke test (100 rows × 2 epochs)
+│   ├── run_v3_array.lsf                # 14-task v3 array (per-seed; submit once per seed)
+│   └── rerun_12_datasets.sh            # legacy bash wrapper (fallback only)
 │
 └── to_remove/                          # archive (do not delete; used for reference)
     ├── legacy_psichic_assets/          # upstream PSICHIC tutorials, weights, demos
@@ -157,7 +169,7 @@ TRACE_Kin/
 | Protein embedding | varies | 200 | `MLP([emb_dim, 400, 200])` |
 
 Protein fusion is **additive**: `residue_x = prot_aa(residue_aa) + prot_evo(residue_evo)`.
-This is one of the structural choices the v2 redesign changes.
+v3 keeps v1's additive fusion verbatim (the gate handles which path wins, not the residue-level fusion).
 
 ### Interaction layers (×3)
 
@@ -205,77 +217,79 @@ LR / dropout / patience instead of these and failed.
 
 ---
 
-## 5. TRACE-Kin v2 architecture (redesign)
+## 5. TRACE-Kin v3 architecture (current redesign)
 
-The v2 architecture targets three structural mechanisms by which Random
-Forest beats PSICHIC on catalytic kinetics. See §6 for the full root-cause
-analysis. The implementation is in
-[`models/trace_kin/net_v2.py`](models/trace_kin/net_v2.py).
+The v3 architecture preserves v1's GNN backbone verbatim and adds two
+parallel components — an RF-style head and a learned per-sample gate — that
+together address the dominant reasons RF beats v1 on catalytic kinetics
+(see §6 for the full analysis). Implementation:
+[`models/trace_kin/net_v3.py`](models/trace_kin/net_v3.py).
 
-### Change 1: Embedding shortcut branch
+### One-diagram summary
 
-A parallel path that skips the GNN entirely:
-
-```python
-# At the END of forward, beside the GNN-pooled prot_pool_feat:
-embedding_pool = scatter(residue_evo_x, prot_batch, dim=0, reduce='mean')   # (B, 1280)
-embedding_shortcut = self.shortcut_proj(embedding_pool)                     # (B, 200)
-mol_prot_feat = torch.cat([mol_pool_feat, prot_pool_feat, embedding_shortcut], dim=-1)
+```
+                      [v1 GNN backbone, unchanged]
+                                 │
+         ┌───────────────────────┼───────────────────────┐
+         ▼                       ▼                       ▼
+   GNN reg head            Gate network             RF-style head
+   pred_gnn (B,1)          α ∈ [0,1] (B,1)          pred_rf (B,1)
+                           sigmoid output
+                                 │
+                                 ▼
+            pred = α·pred_gnn + (1−α)·pred_rf      (loss = MSE(pred, y))
 ```
 
-`self.shortcut_proj = MLP([1280, 400, 200])`. Regression head input grows
-from 400 → 600. **This is the load-bearing change.** It guarantees the
-model has at least the information RF uses on the same embeddings,
-eliminating the bottleneck imposed by v1's `prot_evo: 1280 → 200` projection
-before fusion.
+### What changes from v1
 
-### Change 2: Attention-pooled cluster aggregation (drops MinCut)
+* **GNN backbone**: identical to v1. v3's `self.gnn = TraceKinV1(...)` is
+  reused verbatim. v1 cross-attention scores are exposed in the returned
+  `attention_dict` for downstream TRACE-Reason / TRACE-Gen, so graph
+  grounding survives.
+* **RF-style head**: mean-pooled raw protein embedding (1280-dim) ⊕ Morgan
+  fingerprint (radius=2, 2048-bit) ⊕ MACCS (167-bit) → MLP `[3495, 512,
+  128, 1]`. Receives the *same* features RF baselines use.
+* **Gate network**: takes GNN summary (mol_pool ⊕ prot_pool, 400-dim) and
+  RF features (3495-dim), passes through `MLP([3895, 64, 1])`, then
+  sigmoid. Output α is the per-sample mix weight. Initialized with bias
+  zero so α ≈ 0.5; training pushes it toward whichever path wins.
+* **Auxiliary losses removed**: `ortho_loss` and `cluster_loss` are
+  returned as zero tensors for trainer compatibility. The MinCut pooling
+  itself is preserved (it's load-bearing for the cross-attention shape
+  `DrugProteinConv` expects); only the auxiliary scalars are zeroed.
+* **AA fusion preserved**: v3 keeps v1's `residue_x = prot_aa + prot_evo`
+  additive fusion (default weight 1.0 each). v2's 0.1·prot_aa starvation
+  was a v2-specific choice that did not help.
 
-Replaces `dense_mincut_pool` and its `o_loss` / `cl_loss` outputs with a
-plain softmax-weighted aggregation:
+### Why the gate is the load-bearing innovation
 
-```python
-s_logits = self.cluster[idx](residue_x, dropped_residue_edge_index)  # (N, K)
-s_dense, _ = to_dense_batch(s_logits, prot_batch)                     # (B, max_N, K)
-s_soft = F.softmax(s_dense, dim=-1) * residue_mask.unsqueeze(-1).float()
-cluster_x = torch.bmm(s_soft.transpose(1, 2), residue_hx)              # (B, K, hidden)
-```
+v2 unconditionally concatenated GNN and shortcut features into the
+regression head. The head couldn't learn to ignore the noisy path on a
+per-sample basis, so v2 regressed v1 on 9 of 11 reruns. v3 makes the
+trust decision **explicit**: α picks the path per sample. On Ki tasks
+(GNN's strength), training pushes α high. On catalytic kinetics (RF's
+strength), training pushes α low. If the gate doesn't differentiate (α
+stays ~0.5 across all samples), v3's wins are accidental — that
+diagnostic check is in §6.
 
-The K-cluster structure is preserved so `DrugProteinConv` is unchanged.
-Auxiliary losses are returned as zero tensors for trainer compatibility.
+### Multi-seed ensemble (paper config)
 
-### Change 3: Embedding-dominant residue fusion
-
-```python
-# v1: residue_x = prot_aa(x) + prot_evo(x)
-# v2:
-residue_x = self.prot_evo(residue_evo_x) + 0.1 * self.prot_aa(residue_aa_x)
-```
-
-The `0.1` weight (`aa_residual_weight` in config) is fixed, not learned.
-The embedding now dominates (matching what RF uses) while AA features
-remain available as a small physicochemical correction.
-
-### Stochastic Weight Averaging
-
-Enabled by default in `training/config_v2.json`. SWA accumulates a running
-average of model weights across the final 25% of epochs and substitutes
-that average for the best per-epoch checkpoint **only if it evaluates
-better on the validation set**. Implementation lives in
-[`training/trainer.py`](training/trainer.py). GraphNorm running stats are
-left alone (no `update_bn` pass).
+RF gets bagging for free; v3 must too. The shipped configuration is the
+**3-seed ensemble**: train SEED=1, 2, 3 independently, average predictions
+at evaluation time. `analysis/aggregate_results.py` detects multiple
+`test_prediction_seed*.csv` files per task and averages predictions before
+computing RMSE.
 
 ### Cross-dataset training pooling
 
-For catalytic kinetics measured across multiple datasets (kcat, Km, Ki/kcat_km
-when multi-dataset), `--pool_train_csvs` lets the training script append
-extra `train.parquet` from sibling dataset folders. Test/val always come
-from the primary `--datafolder`. See `training/rerun_12_datasets.sh` for the
-exact pool maps used in the v2 rerun.
+For catalytic kinetics measured across multiple datasets (Km, kcat),
+`--pool_train_csvs` appends extra `train.parquet` from sibling dataset
+folders. Test/val always come from the primary `--datafolder`. See
+`training/run_v3_array.lsf`'s JOBS table for the exact pool maps.
 
 ### Parameter count
 
-v1 ≈ 25M parameters; v2 ≈ 26M (+1280×400 + 400×200 in the shortcut MLP).
+v1 ≈ 25M parameters; v3 ≈ 27M (RF head ≈ 1.9M + gate network ≈ 0.25M).
 Negligible memory overhead, no impact on batch size 16.
 
 ---
@@ -329,12 +343,12 @@ for free. The graph branch is preserved so the Ki-win signal stays.
 
 ### Promotion gate
 
-The redesign promotes to paper figures only if the v2 rerun shows:
+The redesign promotes to paper figures only if the v3 rerun shows:
 
-* Catalytic kinetics gate: v2 ≤ RF best on at least 3 of {kcat, Km, Kd,
+* Catalytic kinetics gate: v3 ≤ RF best on at least 3 of {kcat, Km, Kd,
   kcat/Km}, evaluated by best-2-of-3 splits per kinetic OR per-kinetic
   mean. (See `analysis/promotion_gate.py`.)
-* Ki preservation guard: v2 within +0.02 RMSE of v1 on each Ki rerun.
+* Ki preservation guard: v3 within +0.02 RMSE of v1 on each Ki rerun.
 
 If catalytic gate fails, iterate the redesign before generating figures.
 If only Ki guard fails, ship v1 weights for Ki tasks via
@@ -358,20 +372,25 @@ normalization log is at
 
 ### Blocking — HPC side (LSF jobs)
 
-1. **Smoke-test v2.** Submit a quick GPU job to catch import / config bugs
+1. **Smoke-test v3.** Submit a quick GPU job to catch import / config bugs
    before the 14-task sweep:
    ```bash
-   bsub < training/run_v2_smoke_test.lsf
+   bsub < training/run_v3_smoke_test.lsf
    ```
    Note the returned job ID (`<SMOKE_ID>`). The job exits with PASS if it
    produces a `test_prediction_seed1.csv`.
-2. **Submit the v2 rerun array.** 14 array tasks chained on the smoke job:
+2. **Submit the v3 rerun array (SEED=1).** 14 array tasks chained on the smoke job:
    ```bash
-   bsub -w "done(<SMOKE_ID>)" < training/run_v2_rerun_array.lsf
+   bsub -w "done(<SMOKE_ID>)" < training/run_v3_array.lsf
    ```
    Or skip the smoke test entirely if you trust the code:
    ```bash
-   bsub < training/run_v2_rerun_array.lsf
+   bsub < training/run_v3_array.lsf
+   ```
+   For the multi-seed ensemble (paper config), submit additional seeds in parallel:
+   ```bash
+   SEED=2 bsub -J "trace_kin_v3_s2[1-14]" < training/run_v3_array.lsf
+   SEED=3 bsub -J "trace_kin_v3_s3[1-14]" < training/run_v3_array.lsf
    ```
 3. **(Optional) Submit the v1 baseline rerun array.** Apples-to-apples v1
    reproduction on the same 14 dataset configs:
@@ -381,8 +400,9 @@ normalization log is at
 
 ### Blocking — local (after HPC jobs finish, copy results back)
 
-4. **Aggregate.** `python analysis/aggregate_v2_results.py
-   --results_root /path/to/TRACE_Kin_Results_v2 --output data/benchmark/trace_kin_v2_results.csv`
+4. **Aggregate.** `python analysis/aggregate_results.py
+   --results_root /path/to/TRACE_Kin_Results_v3 --output data/benchmark/trace_kin_v3_results.csv`
+   (Auto-detects multiple seed CSVs per task and averages predictions before computing RMSE.)
 5. **Review the improvement.** `python analysis/check_improvement.py` —
    produces a per-task table + per-kinetic verdict + headline summary.
    Output: `data/benchmark/improvement_summary.md`.
@@ -392,12 +412,12 @@ normalization log is at
 ### After the gate passes
 
 7. Regenerate the cleaned CSV: `python analysis/clean_benchmark.py`.
-8. Regenerate tables with v2 column populated:
+8. Regenerate tables with v3 column populated:
    `python analysis/generate_tables.py`
-9. Generate v1-vs-v2 figure: `python figures/generate_figures.py`
-10. Run significance tests including v1-vs-v2:
+9. Generate v1-vs-v3 figure: `python figures/generate_figures.py`
+10. Run significance tests including v1-vs-v3:
     `python analysis/significance_tests.py`
-11. Spot-check the inference API with both v1 and v2 weights against a
+11. Spot-check the inference API with both v1 and v3 weights against a
     small held-out set.
 
 ### Deferred (P2 / P3 from the TRACE plan)
@@ -410,7 +430,7 @@ normalization log is at
 
 ### Reviewing improvement quickly
 
-After step 4, the one-command answer to "did v2 actually improve over v1
+After step 4, the one-command answer to "did v3 actually improve over v1
 and close the RF gap?" is:
 
 ```bash
@@ -418,7 +438,7 @@ python analysis/check_improvement.py
 ```
 
 It prints (and writes to `data/benchmark/improvement_summary.md`) a per-task
-table with `v1_rmse / v2_rmse / rf_best / Δv1 / Δrf / verdict` columns, a
+table with `v1_rmse / v3_rmse / rf_best / Δv1 / Δrf / verdict` columns, a
 per-kinetic aggregate with PASS/FAIL per kinetic, and a one-paragraph
 headline you can paste into a status update. Exit code 0 if the catalytic
 gate passes, 1 otherwise — same logic as `promotion_gate.py` but with
@@ -431,22 +451,33 @@ the full numeric breakdown.
 The recommended pattern is the LSF job arrays in `training/`. They are pure
 `#BSUB`-driven LSF files; submit each one with `bsub < <file>.lsf`.
 
-### v2 rerun (the redesign)
+### v3 rerun (the current redesign)
 
 Smoke test → rerun array, chained:
 
 ```bash
-cd /sc/arion/projects/.../TRACE_Kin
-bsub < training/run_v2_smoke_test.lsf            # note the job ID
-bsub -w "done(<SMOKE_ID>)" < training/run_v2_rerun_array.lsf
+cd /sc/arion/projects/.../TRACE-Kin
+bsub < training/run_v3_smoke_test.lsf            # note the job ID
+bsub -w "done(<SMOKE_ID>)" < training/run_v3_array.lsf
 ```
 
-The array LSF (`#BSUB -J trace_kin_v2[1-14]`) spawns 14 GPU tasks, each
+The array LSF (`#BSUB -J trace_kin_v3[1-14]`) spawns 14 GPU tasks, each
 running one of the 14 (dataset, kinetic, split, embedding, pool) tuples
-with the v2 redesign + SWA + cross-dataset pooling where applicable.
-Walltime cap per task: 48h. Defaults are appropriate for the Mount Sinai
-H100 NVL queue; override `ENZYME_BASE`, `RESULT_BASE`, `CONFIG_PATH`,
-`EPOCHS`, `BATCH_SIZE`, `SEED`, `LRATE` via env if needed.
+with the v3 dual-head + learned gate architecture, plus cross-dataset
+pooling where applicable. Walltime cap per task: 48h. Defaults are
+appropriate for the Mount Sinai H100 NVL queue; override `ENZYME_BASE`,
+`RESULT_BASE`, `CONFIG_PATH`, `EPOCHS`, `BATCH_SIZE`, `SEED`, `LRATE`
+via env if needed.
+
+For the multi-seed ensemble (paper config), submit additional seeds:
+
+```bash
+SEED=2 bsub -J "trace_kin_v3_s2[1-14]" < training/run_v3_array.lsf
+SEED=3 bsub -J "trace_kin_v3_s3[1-14]" < training/run_v3_array.lsf
+```
+
+`analysis/aggregate_results.py` automatically averages across all
+`test_prediction_seed*.csv` files it finds per task.
 
 ### v1 baseline rerun (apples-to-apples comparator)
 
@@ -468,16 +499,16 @@ sweeps.
 ```bash
 DATASET_SOURCE=MPEK_dataset \
 SINGLE_DATASET=MPEK_kcat_ESMv1_embedding_random \
-RESULT_BASE=/sc/arion/projects/.../TRACE_Kin_Results_v2 \
+RESULT_BASE=/sc/arion/projects/.../TRACE_Kin_Results_v3 \
 SKIP_COMPLETED=false \
-MODEL_VERSION=v2 \
+MODEL_VERSION=v3 \
 USE_SWA=true \
 bsub < training/run_benchmark.lsf
 ```
 
 ### Legacy bash wrapper (fallback)
 
-`training/rerun_12_datasets.sh` loops `bsub` over the 14 v2 jobs. It
+`training/rerun_12_datasets.sh` is a legacy bash wrapper that loops `bsub` over the 14 jobs. It
 remains in the repo but the LSF arrays above are the **recommended**
 entry points — they match the user's `bsub < file.lsf` workflow and let
 you chain via `-w "done(...)"` cleanly.
@@ -509,7 +540,7 @@ python figures/generate_figures.py
 ### Smoke test the model code
 
 ```bash
-python -m py_compile models/trace_kin/net_v1.py models/trace_kin/net_v2.py training/trainer.py training/train_trace_kin.py
+python -m py_compile models/trace_kin/net_v1.py models/trace_kin/net_v3.py training/trainer.py training/train_trace_kin.py
 ```
 
 ---

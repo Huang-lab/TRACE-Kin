@@ -1,12 +1,35 @@
 from rdkit import Chem
 from rdkit.Chem.rdchem import BondType
 
-from rdkit.Chem import ChemicalFeatures
+from rdkit.Chem import ChemicalFeatures, AllChem
+from rdkit.Chem.MACCSkeys import GenMACCSKeys
 from rdkit import RDConfig
 import os
 import numpy as np
 
 import torch
+
+
+# v3 RF-head fingerprint config — must match models/trace_kin/net_v3.py and
+# training/config_v3.json. If these change, retrain (the cached ligand.pt
+# files store the resulting tensors).
+MORGAN_RADIUS = 2
+MORGAN_DIM = 2048
+MACCS_DIM = 167  # GenMACCSKeys returns 167 bits
+
+
+def _compute_fingerprints(mol):
+    """Compute Morgan + MACCS bitvectors for the v3 RF-style head.
+
+    Stored as shape (1, D) so PyG's default Data batching concatenates them
+    along dim 0 into (B, D) per minibatch. Float dtype for direct use in
+    the RF MLP without later casting.
+    """
+    morgan = AllChem.GetMorganFingerprintAsBitVect(mol, MORGAN_RADIUS, MORGAN_DIM)
+    maccs = GenMACCSKeys(mol)
+    morgan_fp = torch.tensor([list(morgan)], dtype=torch.float32)
+    maccs_fp = torch.tensor([list(maccs)], dtype=torch.float32)
+    return morgan_fp, maccs_fp
 
 fdefName = os.path.join(RDConfig.RDDataDir,'BaseFeatures.fdef')
 factory = ChemicalFeatures.BuildFeatureFactory(fdefName)
@@ -474,6 +497,7 @@ def smiles2graph(m_str):
     atom_feature, bond_feature = mgd.featurize(mol,'atom_full_feature')
     atom_idx, _ = mgd.featurize(mol,'atom_type')
     tree = mgd.junction_tree(mol)
+    morgan_fp, maccs_fp = _compute_fingerprints(mol)
 
     out_dict = {
         'smiles':m_str,
@@ -481,15 +505,16 @@ def smiles2graph(m_str):
         'atom_types':'|'.join([i.GetSymbol() for i in mol.GetAtoms()]),
         'atom_idx':torch.tensor(atom_idx),#.to(torch.int8),
         'bond_feature':torch.tensor(bond_feature),#.to(torch.int8),
-
+        'morgan_fp': morgan_fp,
+        'maccs_fp': maccs_fp,
     }
     tree['tree_edge_index'] = tree['tree_edge_index']#.to(torch.int8)
     tree['atom2clique_index'] = tree['atom2clique_index']#.to(torch.int8)
     tree['x_clique'] = tree['x_clique']#.to(torch.int8)
 
     out_dict.update(tree)
-    
-    return out_dict 
+
+    return out_dict
 ####
 
 def ligand_init(smiles_list):
