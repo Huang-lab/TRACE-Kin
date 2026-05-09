@@ -1,0 +1,205 @@
+Sender: LSF System <lsfadmin@lc06e50>
+Subject: Job 242654171: <trace_kin_v3_eval> in cluster <chimera> Exited
+
+Job <trace_kin_v3_eval> was submitted from host <li04e03> by user <wangc40> in cluster <chimera> at Sat May  9 10:28:02 2026
+Job was executed on host(s) <4*lc06e50>, in queue <premium>, as user <wangc40> in cluster <chimera> at Sat May  9 10:28:06 2026
+</hpc/users/wangc40> was used as the home directory.
+</sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE-Kin> was used as the working directory.
+Started at Sat May  9 10:28:06 2026
+Terminated at Sat May  9 10:28:52 2026
+Results reported at Sat May  9 10:28:52 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J trace_kin_v3_eval
+#BSUB -P acc_DiseaseGeneCell
+#BSUB -q premium
+#BSUB -n 4
+#BSUB -R "rusage[mem=8000]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 00:30
+#BSUB -o %J.eval.stdout
+#BSUB -eo %J.eval.stderr
+#BSUB -L /bin/bash
+
+# =============================================================================
+# TRACE-Kin v3 evaluation pipeline (Phase 1: aggregate + check + gate)
+# =============================================================================
+# Submit with:
+#     bsub < analysis/run_v3_evaluation.lsf
+#
+# CPU-only — no GPU needed for any of the three steps. Walltime cap 30 min
+# (typical run is 1-3 minutes). 4 cores + 8 GB is plenty for pandas + numpy
+# work over ~14 tasks × 3 seeds of test_prediction CSVs.
+#
+# Pipeline (each step is gated on the prior succeeding):
+#   1. analysis/aggregate_results.py     — averages predictions across all
+#                                           test_prediction_seed*.csv per task,
+#                                           computes ensemble RMSE, joins v1 +
+#                                           RF baselines from the cleaned
+#                                           historical benchmark.
+#                                           Output: data/benchmark/trace_kin_v3_results.csv
+#   2. analysis/check_improvement.py     — human-readable per-task table with
+#                                           v1 / v3 / RF columns + per-row
+#                                           verdict + per-kinetic aggregate +
+#                                           one-paragraph headline.
+#                                           Output: data/benchmark/improvement_summary.md
+#                                           Exit code 0 if catalytic gate PASS, 1 otherwise.
+#   3. analysis/promotion_gate.py        — binding PASS/FAIL with per-kinetic
+#                                           breakdown + Ki preservation guard.
+#                                           Output: data/benchmark/promotion_gate_decision.md
+#
+# After this finishes, sync the three output files back to local via git:
+#   On HPC:    git add data/benchmark/trace_kin_v3_results.csv \
+#                      data/benchmark/improvement_summary.md \
+#                      data/benchmark/promotion_gate_decision.md
+#              git commit -m "v3 evaluation results (job <JOBID>)"
+#              git push origin main
+#   On Mac:    git pull origin main
+# =============================================================================
+
+# --- Environment -------------------------------------------------------------
+# Match the prologue of the proven-working PSICHIC LSFs verbatim — no
+
+(... more ...)
+------------------------------------------------------------
+
+Exited with exit code 1.
+
+Resource usage summary:
+
+    CPU time :                                   13.87 sec.
+    Max Memory :                                 241 MB
+    Average Memory :                             82.68 MB
+    Total Requested Memory :                     32000.00 MB
+    Delta Memory :                               31759.00 MB
+    Max Swap :                                   -
+    Max Processes :                              6
+    Max Threads :                                7
+    Run time :                                   46 sec.
+    Turnaround time :                            50 sec.
+
+The output (if any) follows:
+
+==========================================
+TRACE-Kin v3 evaluation pipeline
+==========================================
+Date:               Sat May  9 10:28:07 EDT 2026
+Result base:        /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3
+Clean baseline CSV: data/benchmark/kinetic_regress_benchmark_clean.csv
+Aggregated CSV:     data/benchmark/trace_kin_v3_results.csv
+Improvement MD:     data/benchmark/improvement_summary.md
+Gate MD:            data/benchmark/promotion_gate_decision.md
+==========================================
+Python 3.12.2
+Python: /sc/arion/work/wangc40/test-env/envs/test/bin/python
+Found 43 test_prediction_seed*.csv files under /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3
+
+==========================================
+Step 1/3: aggregate_results.py
+    averages predictions across all seeds per task,
+    then computes ensemble RMSE; joins v1 + RF baselines.
+==========================================
+Wrote data/benchmark/trace_kin_v3_results.csv (14 rows)
+
+OK — wrote data/benchmark/trace_kin_v3_results.csv
+Row count:
+15 data/benchmark/trace_kin_v3_results.csv
+Preview (first 3 data rows):
+dataset_folder,dataset_name,k_type,split_mode,embedding,n_seeds,v3_rmse,v1_rmse,rf_best_rmse,v3_minus_v1,v3_minus_rf
+MPEK_kcat_ESMv1_embedding_cold_drug,MPEK,kcat,cold_drug,ESMv1,3,1.087861665577792,1.16,1.131657045,-0.07213833442220796,-0.043795379422208125
+MPEK_kcat_ESM2_embedding_cold_protein,MPEK,kcat,cold_protein,ESM2,3,1.154997794629122,1.176,1.166934154,-0.021002205370877824,-0.011936359370877891
+MPEK_kcat_ESMv1_embedding_random,MPEK,kcat,random,ESMv1,3,0.8073103175296037,0.8758,0.834783124,-0.06848968247039633,-0.027472806470396294
+
+==========================================
+Step 2/3: check_improvement.py
+    per-task table with v1 / v3 / RF + per-row verdict +
+    per-kinetic aggregate + headline summary.
+==========================================
+Wrote data/benchmark/improvement_summary.md
+
+v3 improves over v1 by mean +0.0250 RMSE across 14 paired rows. v3 beats or ties RF on 7/14 reran rows. Catalytic gate: 2/4 kinetics pass. Ki preservation: largest v3−v1 regression = +0.0488.
+
+| k_type | n_splits | beats_rf | mean_v1 | mean_v3 | mean_rf | mean_delta_v1 | mean_delta_rf | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| kcat | 3 | 3 | 1.0706 | 1.0167 | 1.0445 | -0.0539 | -0.0277 | PASS |
+| kcat_km | 3 | 0 | 1.3741 | 1.4253 | 1.3451 | 0.0513 | 0.0803 | FAIL |
+| kd | 3 | 0 | 1.1480 | 1.1807 | 1.1009 | 0.0328 | 0.0798 | FAIL |
+| ki | 3 | 2 | 1.3674 | 1.3625 | 1.4016 | -0.0049 | -0.0391 | PASS |
+| km | 2 | 2 | 0.8669 | 0.6539 | 0.8089 | -0.2130 | -0.1550 | PASS |
+
+check_improvement.py exit code: 1
+    (0 = catalytic gate PASS — ≥3 of 4 kinetics beat RF;
+     1 = catalytic gate FAIL;
+     2 = error reading aggregated CSV)
+Wrote data/benchmark/improvement_summary.md
+
+==========================================
+Step 3/3: promotion_gate.py
+    binding PASS/FAIL verdict with per-kinetic breakdown +
+    Ki preservation guard.
+==========================================
+Wrote data/benchmark/promotion_gate_decision.md
+Overall: FAIL
+
+promotion_gate.py exit code: 0
+Wrote data/benchmark/promotion_gate_decision.md
+
+==========================================
+Pipeline complete.
+==========================================
+
+Output files:
+-rw-r----- 1 wangc40 DiseaseGeneCell 3356 May  9 10:28 data/benchmark/improvement_summary.md
+-rw-r----- 1 wangc40 DiseaseGeneCell 2321 May  9 10:28 data/benchmark/promotion_gate_decision.md
+-rw-r----- 1 wangc40 DiseaseGeneCell 2224 May  9 10:28 data/benchmark/trace_kin_v3_results.csv
+
+--- Headline from check_improvement.py ---
+## Headline
+
+v3 improves over v1 by mean +0.0250 RMSE across 14 paired rows. v3 beats or ties RF on 7/14 reran rows. Catalytic gate: 2/4 kinetics pass. Ki preservation: largest v3−v1 regression = +0.0488.
+
+--- Verdict tail from promotion_gate_decision.md ---
+  - inhouse_Kd_ESM2_embedding_cold_drug: v3=1.3006337304565052, RF=1.160384137, gap=+0.1402
+  - inhouse_Kd_ESM2_embedding_cold_protein: v3=1.2347470112010916, RF=1.158869143, gap=+0.0759
+  - inhouse_Kd_MUTAPLM_embedding_random: v3=1.006802643102997, RF=0.98345077, gap=+0.0234
+
+### `kcat_km`: FAIL
+- 0/3 splits beat RF; mean v3=1.4253 vs mean RF=1.3451. by_count_pass=False, by_mean_pass=False
+  - EITLEM_kkm_MUTAPLM_embedding_cold_drug: v3=1.4923771673696935, RF=1.434169498, gap=+0.0582
+  - EITLEM_kkm_ProteinCLIP_embedding_cold_protein: v3=1.458554045924037, RF=1.345698365, gap=+0.1129
+  - EITLEM_kkm_ProteinCLIP_embedding_random: v3=1.325045915909914, RF=1.255293405, gap=+0.0698
+
+**Catalytic gate: 2/4 kinetics passed → FAIL**
+
+## Ki preservation guard
+Tolerance: v3 may not be more than +0.02 RMSE worse than v1 on Ki tasks.
+  - catpred_ki_ProteinCLIP_embedding_cold_drug: v3=1.3038, v1=1.2875, Δ=+0.0163 (OK)
+  - catpred_ki_ProteinCLIP_embedding_cold_protein: v3=1.5066, v1=1.5863, Δ=-0.0797 (OK)
+  - catpred_ki_ProteinCLIP_embedding_random: v3=1.2772, v1=1.2284, Δ=+0.0488 (GUARD FAIL)
+**Ki guard: FAIL**
+
+---
+## Overall verdict: **FAIL**
+- Do NOT generate paper figures/tables yet.
+- Catalytic gate failed: review per-kinetic breakdown above and iterate v3 design.
+- Ki guard failed: ship v1 weights for Ki tasks; v3 weights for everything else if catalytic gate passed.
+
+
+==========================================
+Next step: commit + push the 3 output files so you can pull them locally.
+
+  git add data/benchmark/trace_kin_v3_results.csv data/benchmark/improvement_summary.md data/benchmark/promotion_gate_decision.md
+  git commit -m "v3 evaluation results (job 242654171)"
+  git push origin main
+==========================================
+Catalytic gate verdict: FAIL (exiting 1)
+
+
+PS:
+
+Read file <242654171.eval.stderr> for stderr output of this job.
+
