@@ -78,15 +78,21 @@ def parse_dataset_name(folder_name: str) -> dict | None:
     return parts
 
 
-def compute_rmse_from_seeds(pred_csvs: list[Path]) -> tuple[float | None, int]:
+def compute_rmse_from_seeds(pred_csvs: list[Path], task_label: str = "") -> tuple[float | None, int]:
     """Recompute RMSE from one or more test_prediction_seed*.csv files.
 
     When multiple seed files are present, predictions are averaged row-by-row
     (matched on (Protein, Ligand) keys when present, otherwise on row order)
     *before* RMSE is computed. The returned int is the number of seeds
     successfully averaged.
+
+    For multi-seed runs, prints a per-seed input row count and the post-merge
+    row count, plus a WARN line if attrition >5% (which would mean the inner
+    join across seeds is dropping samples and the ensemble RMSE is being
+    computed over a different test subset than the per-seed RMSEs).
     """
     frames = []
+    per_seed_n = []  # row counts per input CSV (after dropna on label+pred)
     for pred_csv in sorted(pred_csvs):
         df = pd.read_csv(pred_csv)
         label_col = next((c for c in ("regression_label", "Label") if c in df.columns), None)
@@ -96,7 +102,9 @@ def compute_rmse_from_seeds(pred_csvs: list[Path]) -> tuple[float | None, int]:
         keep_cols = [label_col, pred_col]
         if "Protein" in df.columns and "Ligand" in df.columns:
             keep_cols = ["Protein", "Ligand"] + keep_cols
-        frames.append(df[keep_cols].rename(columns={label_col: "label", pred_col: "pred"}))
+        renamed = df[keep_cols].rename(columns={label_col: "label", pred_col: "pred"})
+        per_seed_n.append((pred_csv.name, len(renamed.dropna(subset=["label", "pred"]))))
+        frames.append(renamed)
 
     if not frames:
         return None, 0
@@ -128,6 +136,20 @@ def compute_rmse_from_seeds(pred_csvs: list[Path]) -> tuple[float | None, int]:
         pred_cols = [c for c in merged.columns if c.startswith("pred_")]
 
     merged = merged.dropna(subset=["label"] + pred_cols)
+
+    # --- Diagnostic: per-seed row count vs post-merge row count -------------
+    n_merged = len(merged)
+    min_seed_n = min(n for _, n in per_seed_n) if per_seed_n else 0
+    attrition = (1.0 - n_merged / min_seed_n) if min_seed_n > 0 else 0.0
+    seed_summary = ", ".join(f"{name}={n}" for name, n in per_seed_n)
+    print(f"  [{task_label}] per-seed rows: {seed_summary} | merged: {n_merged} "
+          f"({attrition * 100:.1f}% attrition vs smallest input)")
+    if attrition > 0.05:
+        print(f"  [{task_label}] WARN: >5% row attrition during seed merge — ensemble RMSE "
+              f"is being computed over a smaller test set than the per-seed RMSEs. "
+              f"Inspect the per-seed prediction CSVs for (Protein, Ligand) key formatting differences.")
+    # ----------------------------------------------------------------------
+
     if merged.empty:
         return None, 0
     avg_pred = merged[pred_cols].mean(axis=1)
@@ -165,7 +187,7 @@ def main() -> None:
             pred_files = list(ds_dir.glob("test_prediction_seed*.csv"))
             if not pred_files:
                 continue
-            v3_rmse, n_seeds = compute_rmse_from_seeds(pred_files)
+            v3_rmse, n_seeds = compute_rmse_from_seeds(pred_files, task_label=ds_dir.name)
             parsed = parse_dataset_name(ds_dir.name)
             if parsed is None:
                 print(f"WARN: cannot parse dataset name {ds_dir.name}, skipping")
