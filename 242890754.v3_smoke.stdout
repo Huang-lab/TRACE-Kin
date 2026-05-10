@@ -1,0 +1,263 @@
+Sender: LSF System <lsfadmin@lg02e07>
+Subject: Job 242890754: <trace_kin_v3_smoke> in cluster <chimera> Done
+
+Job <trace_kin_v3_smoke> was submitted from host <li04e01> by user <wangc40> in cluster <chimera> at Sun May 10 17:42:48 2026
+Job was executed on host(s) <8*lg02e07>, in queue <gpu>, as user <wangc40> in cluster <chimera> at Sun May 10 17:42:54 2026
+</hpc/users/wangc40> was used as the home directory.
+</sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE-Kin> was used as the working directory.
+Started at Sun May 10 17:42:54 2026
+Terminated at Sun May 10 17:45:21 2026
+Results reported at Sun May 10 17:45:21 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J trace_kin_v3_smoke
+#BSUB -P acc_DiseaseGeneCell
+#BSUB -q gpu
+#BSUB -R h100nvl
+#BSUB -gpu num=1
+#BSUB -n 8
+#BSUB -R "rusage[mem=8000]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 00:30
+#BSUB -o %J.v3_smoke.stdout
+#BSUB -eo %J.v3_smoke.stderr
+#BSUB -L /bin/bash
+
+# =============================================================================
+# TRACE-Kin v3 + ChemBERT context residual smoke test
+# =============================================================================
+# Submit with:
+#     bsub < training/run_v3_smoke_test.lsf
+#
+# Purpose: validate the v3-with-ChemBERT-context architecture end-to-end
+# on one cell before committing the 10-cell × 3-seed perfolder array.
+# Catches:
+#   - parquet `metabolite_features` parsing / build_smi2chembert
+#   - chembert_fp shape (B, 768) flowing through MultiGraphData → trainer
+#   - net_v3 chembert_proj (Linear 768 → 200) + reg_out fresh head
+#   - zero-init chembert_proj means epoch 0 ≈ v1 baseline (sanity check)
+#   - virtual_screening + final test prediction CSV with the new kwarg
+#
+# Runs train_trace_kin.py with a tiny sample (100 rows, 2 epochs) on one
+# fixed dataset so it finishes in a few minutes. Walltime capped at 30 min.
+#
+# After this job finishes, chain the perfolder arrays to it:
+#     bsub -w "done(<SMOKE_JOB_ID>)" < training/run_v3_perfolder_s1.lsf
+#     bsub < training/run_v3_perfolder_s2.lsf
+#     bsub < training/run_v3_perfolder_s3.lsf
+# (s2 and s3 don't need the dependency: each cell rebuilds its own cache
+# unconditionally, so all three seeds can run independently.)
+# =============================================================================
+
+# --- Environment -------------------------------------------------------------
+# Match the prologue of the proven-working PSICHIC LSFs verbatim — no
+# `set -euo pipefail`. Mount Sinai's /etc/profile.d scripts return non-zero
+# in places that aren't real errors, and errexit aborts the job before
+# module + conda activation can complete.
+ml purge
+source ~/.bashrc
+module load anaconda3/2024.06
+source activate test
+module load cuda/12.4.0
+
+(... more ...)
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   96.00 sec.
+    Max Memory :                                 6305 MB
+    Average Memory :                             3678.62 MB
+    Total Requested Memory :                     64000.00 MB
+    Delta Memory :                               57695.00 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                21
+    Run time :                                   147 sec.
+    Turnaround time :                            153 sec.
+
+The output (if any) follows:
+
+==========================================
+TRACE-Kin v3 + ChemBERT Context Residual Smoke Test
+==========================================
+Date:               Sun May 10 17:42:57 EDT 2026
+Dataset:            /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_ESMv1_embedding_random
+Result dir:         /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert_ctx/_smoke
+Config:             training/config_v3.json
+Sample size:        100 rows train / 50 test
+Epochs:             2
+ChemBERT context:   Linear(768 -> 200) added as residual to mol_pool
+==========================================
+Python 3.12.2
+Python: /sc/arion/work/wangc40/test-env/envs/test/bin/python
+CUDA device: NVIDIA H100 80GB HBM3, sm_90
+============================================================
+TRACE-Kin training
+============================================================
+Datafolder:        /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_ESMv1_embedding_random
+Result path:       /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert_ctx/_smoke
+Config:            training/config_v3.json
+Pool train CSVs:   (none)
+============================================================
+Loading primary train: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_ESMv1_embedding_random/train.parquet
+Loading primary test: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_ESMv1_embedding_random/test.parquet
+Loading primary val: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_ESMv1_embedding_random/val.parquet
+Detected prot_evo_channels = 1280
+seq2feat: 1518 unique sequences.
+Detected chembert_dim = 768
+smi2chembert: 857 unique SMILES.
+model_version: v3, use_swa: False
+Building protein graphs from scratch (this can be slow)...
+Building ligand graphs from scratch...
+loaders ready: train=7 test=4 val=112
+Computing PNA degrees from training data...
+Built TraceKinV3 with 6,105,522 parameters
+[LR schedule] schedule_lr=False, lrate=0.0001, min_lrate=0, warmup_iters=0, lr_decay_iters=14, total_iters=14
+Not in terminal, reprint now using normal build-in print function.
+                              
+                              
+----------------------------------------
+Epoch 001 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 2.6282, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.5469,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.222,
+    "mse": 2.3704,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1974,
+    "regression_loss": 2.3695,
+    "rm2": 0.0376,
+    "rmse": 1.5396,
+    "sd": 1.5061,
+    "spearman": 0.1381,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6056,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.1111,
+    "mse": 1.8983,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.2485,
+    "regression_loss": 2.2164,
+    "rm2": 0.0582,
+    "rmse": 1.3778,
+    "sd": 1.3472,
+    "spearman": 0.3232,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 002 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 2.3988, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.539,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.224,
+    "mse": 2.3703,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1797,
+    "regression_loss": 2.3694,
+    "rm2": 0.0317,
+    "rmse": 1.5396,
+    "sd": 1.5113,
+    "spearman": 0.1171,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6056,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.1111,
+    "mse": 1.8983,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.2485,
+    "regression_loss": 2.2164,
+    "rm2": 0.0582,
+    "rmse": 1.3778,
+    "sd": 1.3472,
+    "spearman": 0.3232,
+    "spectral_loss": 0.0
+}
+[best epoch] epoch=1, best_rmse=1.5396, lr_at_best=1.000e-04
+                              
+                              
+----------------------------------------
+Epoch 002 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 2.3988, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.539,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.224,
+    "mse": 2.3703,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1797,
+    "regression_loss": 2.3694,
+    "rm2": 0.0317,
+    "rmse": 1.5396,
+    "sd": 1.5113,
+    "spearman": 0.1171,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6056,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.1111,
+    "mse": 1.8983,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.2485,
+    "regression_loss": 2.2164,
+    "rm2": 0.0582,
+    "rmse": 1.3778,
+    "sd": 1.3472,
+    "spearman": 0.3232,
+    "spectral_loss": 0.0
+}
+Final test metrics: rmse=1.3778, pearson=0.2485, r2_proxy(mse)=1.8983
+Done. Predictions: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert_ctx/_smoke/test_prediction_seed1.csv; checkpoint: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert_ctx/_smoke/save_model_seed1/model.pt
+
+==========================================
+SMOKE TEST: PASS
+Result file: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert_ctx/_smoke/test_prediction_seed1.csv
+Next: bsub -w "done(242890754)" < training/run_v3_perfolder_s1.lsf
+      bsub < training/run_v3_perfolder_s2.lsf
+      bsub < training/run_v3_perfolder_s3.lsf
+==========================================
+
+
+PS:
+
+Read file <242890754.v3_smoke.stderr> for stderr output of this job.
+
