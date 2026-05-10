@@ -68,6 +68,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--feature_col", type=str, default="protein_features")
     parser.add_argument("--ligand_col", type=str, default="Smiles")
     parser.add_argument("--label_col", type=str, default="Label")
+    parser.add_argument("--metabolite_feature_col", type=str, default="metabolite_features",
+                        help="Per-row column with the pre-computed ChemBERT (768) molecular embedding "
+                             "consumed by the v3 FP-MLP head. Required for v3.")
 
     # Cross-dataset pooling for v2 catalytic kinetics. Each entry is the path
     # to an additional dataset folder whose train.{parquet,csv} is appended to
@@ -192,6 +195,56 @@ def build_seq2feat(*dfs: pd.DataFrame, protein_col: str, feature_col: str) -> di
     return seq2feat
 
 
+def detect_chembert_dim(df: pd.DataFrame, feature_col: str) -> int:
+    """Same shape as detect_embedding_dim, but for the ChemBERT column.
+
+    Returns the trailing dim of the first non-null entry. ChemBERT
+    embeddings are sequence-level (1D); we still take .shape[-1] so a 2D
+    encoding wouldn't silently break.
+    """
+    for _, row in df.iterrows():
+        raw = row[feature_col]
+        if raw is None:
+            continue
+        if isinstance(raw, (list, tuple, np.ndarray)) and len(raw) == 0:
+            continue
+        if not isinstance(raw, (list, tuple, np.ndarray)) and pd.isna(raw):
+            continue
+        arr = coerce_features_to_numpy(raw)
+        return int(arr.shape[-1] if arr.ndim >= 1 else arr.size)
+    raise ValueError(f"No valid {feature_col!r} entry found in dataframe.")
+
+
+def build_smi2chembert(*dfs: pd.DataFrame, ligand_col: str, feature_col: str) -> dict:
+    """Map SMILES -> ChemBERT (768,) numpy embedding from one or more DataFrames.
+
+    Fails loudly if the same SMILES appears with materially different
+    embedding vectors across rows — silent last-write-wins would mask data
+    pipeline bugs.
+    """
+    smi2chembert: dict = {}
+    for df in dfs:
+        if df is None:
+            continue
+        for smi, raw in zip(df[ligand_col], df[feature_col]):
+            if raw is None:
+                continue
+            if isinstance(raw, (list, tuple, np.ndarray)) and len(raw) == 0:
+                continue
+            if not isinstance(raw, (list, tuple, np.ndarray)) and pd.isna(raw):
+                continue
+            arr = coerce_features_to_numpy(raw).reshape(-1)
+            existing = smi2chembert.get(smi)
+            if existing is not None and not np.allclose(existing, arr, atol=1e-5):
+                raise ValueError(
+                    f"ChemBERT collision for SMILES {smi!r}: two different "
+                    f"vectors observed across rows (max abs diff "
+                    f"{float(np.max(np.abs(existing - arr))):.4g})."
+                )
+            smi2chembert[smi] = arr
+    return smi2chembert
+
+
 def normalize_columns(df: pd.DataFrame, protein_col: str, ligand_col: str, label_col: str) -> pd.DataFrame:
     """Rename input columns to the canonical names that ProteinMoleculeDataset expects."""
     rename_map = {}
@@ -205,8 +258,8 @@ def normalize_columns(df: pd.DataFrame, protein_col: str, ligand_col: str, label
 
 
 def load_split_dataframes(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None,
-                                          list[str], list[str], dict, int]:
-    """Load primary train/test/val once, build seq2feat, return everything the rest of main() needs."""
+                                          list[str], list[str], dict, dict, int, int]:
+    """Load primary train/test/val once, build seq2feat + smi2chembert, return everything the rest of main() needs."""
     train_path = find_data_file(args.datafolder, "train")
     test_path = find_data_file(args.datafolder, "test")
     val_path = find_data_file(args.datafolder, "val")
@@ -261,6 +314,17 @@ def load_split_dataframes(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
                               protein_col=args.protein_col, feature_col=args.feature_col)
     print(f"seq2feat: {len(seq2feat)} unique sequences.")
 
+    # ChemBERT (768) molecular embeddings for the v3 FP-MLP head. The
+    # parquet files written by the user pipeline carry these per-row in
+    # metabolite_features. Detect dim from train, then build the SMILES
+    # -> vector dict across all splits.
+    chembert_dim = detect_chembert_dim(train_df, args.metabolite_feature_col)
+    print(f"Detected chembert_dim = {chembert_dim}")
+    smi2chembert = build_smi2chembert(train_df, test_df, val_df,
+                                      ligand_col=args.ligand_col,
+                                      feature_col=args.metabolite_feature_col)
+    print(f"smi2chembert: {len(smi2chembert)} unique SMILES.")
+
     # Standardize column names for downstream code.
     train_df = normalize_columns(train_df, args.protein_col, args.ligand_col, args.label_col)
     test_df = normalize_columns(test_df, args.protein_col, args.ligand_col, args.label_col)
@@ -282,14 +346,23 @@ def load_split_dataframes(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
             f"{len(missing)} sequences are missing protein_features (e.g. {missing[:3]!r})."
         )
 
-    return train_df, test_df, val_df, proteins, ligands, seq2feat, embedding_dim
+    missing_smi = [s for s in ligands if s not in smi2chembert]
+    if missing_smi:
+        raise ValueError(
+            f"{len(missing_smi)} SMILES are missing metabolite_features "
+            f"(e.g. {missing_smi[:3]!r})."
+        )
+
+    return (train_df, test_df, val_df, proteins, ligands,
+            seq2feat, smi2chembert, embedding_dim, chembert_dim)
 
 
 # ---------------------------------------------------------------------------
 # Preprocessing cache (protein.pt / ligand.pt)
 # ---------------------------------------------------------------------------
 def preprocess(folder: str, proteins: list[str], ligands: list[str],
-               seq2feat: dict, force_rebuild: bool) -> tuple[dict, dict]:
+               seq2feat: dict, smi2chembert: dict,
+               force_rebuild: bool) -> tuple[dict, dict]:
     protein_path = os.path.join(folder, "protein.pt")
     ligand_path = os.path.join(folder, "ligand.pt")
 
@@ -304,9 +377,23 @@ def preprocess(folder: str, proteins: list[str], ligands: list[str],
     if os.path.exists(ligand_path) and not force_rebuild:
         print(f"Reusing ligand cache: {ligand_path}")
         ligand_dict = torch.load(ligand_path)
+        # The cache may predate the ChemBERT cutover. v3 needs chembert_fp on
+        # every ligand; backfill in-memory from smi2chembert (no disk write —
+        # next --force_rebuild will replace the on-disk cache cleanly).
+        missing = [s for s in ligand_dict if 'chembert_fp' not in ligand_dict[s]]
+        if missing:
+            print(f"Backfilling chembert_fp on {len(missing)} cached ligands...")
+            for s in missing:
+                if s not in smi2chembert:
+                    raise KeyError(
+                        f"chembert_fp missing in cache and in smi2chembert "
+                        f"for SMILES {s!r}; rerun with --force_rebuild."
+                    )
+                vec = np.asarray(smi2chembert[s], dtype=np.float32).reshape(-1)
+                ligand_dict[s]['chembert_fp'] = torch.from_numpy(vec).unsqueeze(0)
     else:
         print("Building ligand graphs from scratch...")
-        ligand_dict = ligand_init(ligands)
+        ligand_dict = ligand_init(ligands, smi2chembert=smi2chembert)
         torch.save(ligand_dict, ligand_path)
 
     if torch.cuda.is_available():
@@ -397,8 +484,7 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str):
         model = TraceKinV3(
             mol_deg, prot_deg,
             **common_kwargs,
-            morgan_dim=params.get("morgan_dim", 2048),
-            maccs_dim=params.get("maccs_dim", 167),
+            chembert_dim=params.get("chembert_dim", 768),
             rf_head_hidden=tuple(params.get("rf_head_hidden", [512, 128])),
             gate_hidden=params.get("gate_hidden", 64),
             gate_init_bias=params.get("gate_init_bias", 0.0),
@@ -428,13 +514,15 @@ def main():
     print(f"Pool train CSVs:   {args.pool_train_csvs or '(none)'}")
     print("=" * 60)
 
-    # 1. Load splits + build seq2feat (single-pass loading).
-    train_df, test_df, val_df, proteins, ligands, seq2feat, embedding_dim = load_split_dataframes(args)
+    # 1. Load splits + build seq2feat / smi2chembert (single-pass loading).
+    (train_df, test_df, val_df, proteins, ligands,
+     seq2feat, smi2chembert, embedding_dim, chembert_dim) = load_split_dataframes(args)
 
     # 2. Load and update model config.
     with open(args.config_path) as f:
         model_config = json.load(f)
     model_config["params"]["prot_evo_channels"] = embedding_dim
+    model_config["params"]["chembert_dim"] = chembert_dim
     model_config["optimizer"]["lrate"] = args.lrate
     model_config["tasks"]["regression_task"] = args.regression_task
     model_config["tasks"]["classification_task"] = args.classification_task
@@ -452,7 +540,7 @@ def main():
 
     # 3. Preprocess proteins/ligands (with cache).
     protein_dict, ligand_dict = preprocess(
-        args.datafolder, proteins, ligands, seq2feat, args.force_rebuild
+        args.datafolder, proteins, ligands, seq2feat, smi2chembert, args.force_rebuild
     )
 
     # 4. Build DataLoaders (with row filtering).

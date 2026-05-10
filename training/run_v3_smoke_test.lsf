@@ -13,18 +13,27 @@
 #BSUB -L /bin/bash
 
 # =============================================================================
-# TRACE-Kin v3 smoke test
+# TRACE-Kin v3 + ChemBERT FP-MLP smoke test
 # =============================================================================
 # Submit with:
 #     bsub < training/run_v3_smoke_test.lsf
 #
-# Purpose: catch import / config / fingerprint / gate problems with the v3
-# dual-head architecture *before* committing to the 14-task rerun array. Runs
-# train_trace_kin.py with a tiny sample (100 rows, 2 epochs) on one fixed
-# dataset so it finishes in a few minutes. Walltime capped at 30 minutes.
+# Purpose: validate the ChemBERT cutover end-to-end on one cell *before*
+# committing the full 27-cell × 3-seed perfolder array. Catches:
+#   - parquet `metabolite_features` parsing / build_smi2chembert
+#   - chembert_fp shape (B, 768) flowing through MultiGraphData → trainer
+#   - net_v3 FP-MLP head dim (1280 + 768 = 2048) and gate (= 2448)
+#   - virtual_screening + final test prediction CSV with the new kwarg
 #
-# After this job finishes, chain the rerun array to it:
-#     bsub -w "done(<SMOKE_JOB_ID>)" < training/run_v3_array.lsf
+# Runs train_trace_kin.py with a tiny sample (100 rows, 2 epochs) on one
+# fixed dataset so it finishes in a few minutes. Walltime capped at 30 min.
+#
+# After this job finishes, chain the perfolder arrays to it:
+#     bsub -w "done(<SMOKE_JOB_ID>)" < training/run_v3_perfolder_s1.lsf
+#     bsub < training/run_v3_perfolder_s2.lsf
+#     bsub < training/run_v3_perfolder_s3.lsf
+# (s2 and s3 don't need the dependency: each cell rebuilds its own cache
+# unconditionally, so all three seeds can run independently.)
 # =============================================================================
 
 # --- Environment -------------------------------------------------------------
@@ -46,19 +55,20 @@ export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 # --- Knobs (override via env if desired) ------------------------------------
 ENZYME_BASE="${ENZYME_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset}"
 SMOKE_DATASET_DIR="${SMOKE_DATASET_DIR:-$ENZYME_BASE/MPEK_dataset/MPEK_kcat_ESMv1_embedding_random}"
-SMOKE_RESULT_BASE="${SMOKE_RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3/_smoke}"
+SMOKE_RESULT_BASE="${SMOKE_RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert/_smoke}"
 CONFIG_PATH="${CONFIG_PATH:-training/config_v3.json}"
 
 # --- Banner ------------------------------------------------------------------
 echo "=========================================="
-echo "TRACE-Kin v3 Smoke Test"
+echo "TRACE-Kin v3 + ChemBERT Smoke Test"
 echo "=========================================="
 echo "Date:               $(date)"
 echo "Dataset:            $SMOKE_DATASET_DIR"
 echo "Result dir:         $SMOKE_RESULT_BASE"
 echo "Config:             $CONFIG_PATH"
-echo "Sample size:        100 rows"
+echo "Sample size:        100 rows train / 50 test"
 echo "Epochs:             2"
+echo "FP-MLP head input:  ESM mean (1280) + ChemBERT (768) = 2048"
 echo "=========================================="
 
 python --version
@@ -79,9 +89,9 @@ rm -rf "$SMOKE_RESULT_BASE"
 mkdir -p "$SMOKE_RESULT_BASE"
 
 # --- Run a tiny v3 training -------------------------------------------------
-# --force_rebuild because the cached ligand.pt from prior runs may not contain
-# the new Morgan + MACCS fingerprints. After the first v3 run, the rebuilt
-# cache is fingerprint-aware and subsequent runs can omit --force_rebuild.
+# --force_rebuild because the cached ligand.pt from prior morgan/maccs runs
+# lacks chembert_fp; the in-memory backfill in preprocess() requires
+# smi2chembert to be populated which the smoke test confirms end-to-end.
 python training/train_trace_kin.py \
     --datafolder "$SMOKE_DATASET_DIR" \
     --result_path "$SMOKE_RESULT_BASE" \
@@ -91,6 +101,11 @@ python training/train_trace_kin.py \
     --batch_size 16 \
     --seed 1 \
     --lrate 1e-4 \
+    --protein_col Sequence \
+    --feature_col protein_features \
+    --metabolite_feature_col metabolite_features \
+    --ligand_col Smiles \
+    --label_col Label \
     --regression_task \
     --model_version v3 \
     --sample_train 100 \
@@ -103,7 +118,9 @@ if ls "$SMOKE_RESULT_BASE"/test_prediction_seed*.csv 1>/dev/null 2>&1; then
     echo "=========================================="
     echo "SMOKE TEST: PASS"
     echo "Result file: $(ls "$SMOKE_RESULT_BASE"/test_prediction_seed*.csv)"
-    echo "Next: bsub -w \"done($LSB_JOBID)\" < training/run_v3_array.lsf"
+    echo "Next: bsub -w \"done($LSB_JOBID)\" < training/run_v3_perfolder_s1.lsf"
+    echo "      bsub < training/run_v3_perfolder_s2.lsf"
+    echo "      bsub < training/run_v3_perfolder_s3.lsf"
     echo "=========================================="
     exit 0
 else

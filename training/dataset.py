@@ -58,22 +58,12 @@ class ProteinMoleculeDataset(Dataset):
                 v['tree_edge_index'] = v['tree_edge_index'].long()
                 v['atom2clique_index'] = v['atom2clique_index'].long()
 
-                ## v3 RF-head fingerprints — backfill from stored SMILES if a
-                ## pre-v3 ligand.pt cache is loaded (older runs did not store
-                ## these). Fresh caches built by training/ligand_init.py always
-                ## contain them.
-                if 'morgan_fp' not in v or 'maccs_fp' not in v:
-                    from training.ligand_init import _compute_fingerprints
-                    from rdkit import Chem
-                    _mol = Chem.MolFromSmiles(v.get('smiles', ''))
-                    if _mol is not None:
-                        v['morgan_fp'], v['maccs_fp'] = _compute_fingerprints(_mol)
-                    else:
-                        # Should not happen — if it ever does, populate zero
-                        # fingerprints so the v3 RF head receives well-shaped
-                        # input rather than crashing the whole job.
-                        v['morgan_fp'] = torch.zeros((1, 2048), dtype=torch.float32)
-                        v['maccs_fp'] = torch.zeros((1, 167), dtype=torch.float32)
+                ## v3 FP-MLP head: ChemBERT (768) embeddings live under
+                ## `chembert_fp` and are populated by training/ligand_init.py
+                ## from the per-row metabolite_features parquet column. No
+                ## backfill — if the cache predates the ChemBERT cutover,
+                ## rebuild via --force_rebuild. The v3 forward will raise
+                ## loudly if chembert_fp is missing at __getitem__ time.
 
             for _, v in self.prots.items():
                 v['seq_feat'] = v['seq_feat'].float()
@@ -138,9 +128,8 @@ class ProteinMoleculeDataset(Dataset):
             clique_edge_index = mol['tree_edge_index']
             atom2clique_index = mol['atom2clique_index']
 
-            ## v3 RF-head fingerprints (per-graph, shape (1, D))
-            morgan_fp = mol['morgan_fp']
-            maccs_fp = mol['maccs_fp']
+            ## v3 FP-MLP ChemBERT embedding (per-graph, shape (1, 768))
+            chembert_fp = mol['chembert_fp']
             ## Prot
             prot_seq = prot['seq']
             prot_node_aa = prot['seq_feat']
@@ -164,18 +153,8 @@ class ProteinMoleculeDataset(Dataset):
             clique_edge_index = mol['tree_edge_index'].long()
             atom2clique_index = mol['atom2clique_index'].long()
 
-            ## v3 RF-head fingerprints (per-graph, shape (1, D))
-            morgan_fp = mol.get('morgan_fp')
-            maccs_fp = mol.get('maccs_fp')
-            if morgan_fp is None or maccs_fp is None:
-                from training.ligand_init import _compute_fingerprints
-                from rdkit import Chem
-                _mol = Chem.MolFromSmiles(mol.get('smiles', ''))
-                if _mol is not None:
-                    morgan_fp, maccs_fp = _compute_fingerprints(_mol)
-                else:
-                    morgan_fp = torch.zeros((1, 2048), dtype=torch.float32)
-                    maccs_fp = torch.zeros((1, 167), dtype=torch.float32)
+            ## v3 FP-MLP ChemBERT embedding (per-graph, shape (1, 768))
+            chembert_fp = mol['chembert_fp']
 
             prot_seq = prot['seq']
             prot_node_aa = prot['seq_feat'].float()
@@ -191,8 +170,8 @@ class ProteinMoleculeDataset(Dataset):
                 mol_edge_attr=mol_edge_attr, mol_num_nodes= mol_num_nodes,
                 clique_x=mol_x_clique, clique_edge_index=clique_edge_index, atom2clique_index=atom2clique_index,
                 clique_num_nodes=clique_num_nodes,
-                ## v3 RF-head ligand fingerprints (per-graph, shape (1, D); batch to (B, D))
-                morgan_fp=morgan_fp, maccs_fp=maccs_fp,
+                ## v3 FP-MLP ChemBERT embedding (per-graph, shape (1, 768); batch to (B, 768))
+                chembert_fp=chembert_fp,
                 ## PROTEIN
                 prot_node_aa=prot_node_aa, prot_node_evo=prot_node_evo,
                 prot_node_pos=prot_node_pos, prot_seq=prot_seq,

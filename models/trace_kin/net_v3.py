@@ -4,12 +4,14 @@ Two prediction heads share v1's GNN encoder, combined via a sigmoid gate:
 
 * GNN head:  v1's regression head on top of the standard mol_pool ⊕ prot_pool.
              Wins on Ki tasks where binding-pocket geometry matters.
-* RF head:   mean-pooled raw protein embedding ⊕ Morgan FP ⊕ MACCS FP → MLP.
-             Receives the same features RF baselines use, so this path can
-             match RF where the GNN path can't.
+* FP-MLP:    mean-pooled raw protein embedding ⊕ ChemBERT (768) → MLP.
+             Receives the same channels the historical RF baseline uses
+             (ESM mean + ChemBERT learned molecular embedding), so this path
+             can match RF where the GNN path can't. Apples-to-apples vs the
+             ChemBERT-fed RF baseline in trace_doc/kinetic_regress_benchmark.csv.
 * Gate:      sigmoid network outputs α ∈ [0,1] per sample. Final prediction
-             is α · pred_gnn + (1 − α) · pred_rf. Training pushes α high on
-             tasks where the GNN wins (Ki) and low on tasks where RF features
+             is α · pred_gnn + (1 − α) · pred_fp. Training pushes α high on
+             tasks where the GNN wins (Ki) and low on tasks where FP features
              win (catalytic kinetics). v2's mistake was unconditional
              concatenation; v3 makes the trust decision explicit.
 
@@ -61,8 +63,7 @@ class TraceKinV3(nn.Module):
         multiclassification_head: int = 0,
         device: str = "cuda:0",
         # v3-specific args
-        morgan_dim: int = 2048,
-        maccs_dim: int = 167,
+        chembert_dim: int = 768,
         rf_head_hidden=(512, 128),
         gate_hidden: int = 64,
         gate_init_bias: float = 0.0,
@@ -96,9 +97,9 @@ class TraceKinV3(nn.Module):
             device=device,
         )
 
-        # RF-style head — same input shape as a typical RF baseline:
-        # mean-pooled raw embedding ⊕ Morgan FP ⊕ MACCS FP.
-        rf_in_dim = prot_evo_channels + morgan_dim + maccs_dim
+        # FP-MLP head — same input channels as the historical ChemBERT-fed RF
+        # baseline: mean-pooled raw protein embedding ⊕ ChemBERT (768).
+        rf_in_dim = prot_evo_channels + chembert_dim
         rf_layers = []
         prev = rf_in_dim
         for h in rf_head_hidden:
@@ -150,9 +151,8 @@ class TraceKinV3(nn.Module):
         # Mol-Protein Interaction batch
         mol_batch=None, prot_batch=None, clique_batch=None,
         save_cluster: bool = False,
-        # v3-specific: per-graph ligand fingerprints
-        morgan_fp: Optional[torch.Tensor] = None,
-        maccs_fp: Optional[torch.Tensor] = None,
+        # v3-specific: per-graph ChemBERT molecular embedding (768)
+        chembert_fp: Optional[torch.Tensor] = None,
     ):
         # 1. Run the GNN backbone. v1 returns a 7-tuple; pred_gnn is reg_pred.
         pred_gnn, cls_pred, mcls_pred, sp_loss, o_loss, cl_loss, attention_dict = self.gnn(
@@ -178,26 +178,30 @@ class TraceKinV3(nn.Module):
         if pred_gnn is None:
             return pred_gnn, cls_pred, mcls_pred, sp_loss, o_loss, cl_loss, attention_dict
 
-        # Regression task — fingerprints are required. Don't silently fall
-        # back to pred_gnn alone: pred_gnn is co-calibrated with pred_rf
+        # Regression task — ChemBERT features are required. Don't silently
+        # fall back to pred_gnn alone: pred_gnn is co-calibrated with pred_rf
         # during training (the gate handles calibration jointly), so it
         # produces nonsense predictions on its own. Raise loudly so any
-        # caller that forgets to pass fingerprints gets a clear error
-        # instead of silently-bad RMSE.
-        if morgan_fp is None or maccs_fp is None:
+        # caller that forgets to pass chembert_fp gets a clear error instead
+        # of silently-bad RMSE.
+        if chembert_fp is None:
             raise RuntimeError(
-                "TraceKinV3 requires morgan_fp and maccs_fp kwargs for "
-                "regression. All model() call sites in trainer.py, "
-                "data_utils.virtual_screening, and inference/ must pass "
-                "them. v1 silently ignores these kwargs; v3 does not."
+                "TraceKinV3 requires chembert_fp kwarg for regression. All "
+                "model() call sites in trainer.py, data_utils.virtual_screening, "
+                "and inference/ must pass it. v1 silently ignores this kwarg; "
+                "v3 does not."
             )
 
-        # 2. RF-style head input: mean-pool the raw 1280-dim embedding per
-        #    sample, then concatenate ligand fingerprints.
+        # 2. FP-MLP input: mean-pool the raw 1280-dim protein embedding per
+        #    sample, then concatenate the per-row ChemBERT (768) molecular
+        #    embedding.
         evo_mean = scatter(residue_evo_x, prot_batch, dim=0, reduce="mean")  # (B, 1280)
-        morgan = morgan_fp.float()                                           # (B, 2048)
-        maccs = maccs_fp.float()                                             # (B, 167)
-        rf_features = torch.cat([evo_mean, morgan, maccs], dim=-1)           # (B, 3495)
+        chembert = chembert_fp.float()                                       # (B, 768)
+        if chembert.dim() == 3:
+            # Per-graph cache stores shape (1, 768); PyG batches to (B, 1, 768)
+            # in some collate paths. Squeeze the singleton.
+            chembert = chembert.squeeze(1)
+        rf_features = torch.cat([evo_mean, chembert], dim=-1)                # (B, 2048)
         pred_rf = self.rf_head(rf_features)                                  # (B, 1)
 
         # 3. Gate input: GNN summary (mol_pool + prot_pool) plus RF features.

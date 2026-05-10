@@ -1,8 +1,7 @@
 from rdkit import Chem
 from rdkit.Chem.rdchem import BondType
 
-from rdkit.Chem import ChemicalFeatures, AllChem
-from rdkit.Chem.MACCSkeys import GenMACCSKeys
+from rdkit.Chem import ChemicalFeatures
 from rdkit import RDConfig
 import os
 import numpy as np
@@ -10,26 +9,12 @@ import numpy as np
 import torch
 
 
-# v3 RF-head fingerprint config — must match models/trace_kin/net_v3.py and
-# training/config_v3.json. If these change, retrain (the cached ligand.pt
-# files store the resulting tensors).
-MORGAN_RADIUS = 2
-MORGAN_DIM = 2048
-MACCS_DIM = 167  # GenMACCSKeys returns 167 bits
-
-
-def _compute_fingerprints(mol):
-    """Compute Morgan + MACCS bitvectors for the v3 RF-style head.
-
-    Stored as shape (1, D) so PyG's default Data batching concatenates them
-    along dim 0 into (B, D) per minibatch. Float dtype for direct use in
-    the RF MLP without later casting.
-    """
-    morgan = AllChem.GetMorganFingerprintAsBitVect(mol, MORGAN_RADIUS, MORGAN_DIM)
-    maccs = GenMACCSKeys(mol)
-    morgan_fp = torch.tensor([list(morgan)], dtype=torch.float32)
-    maccs_fp = torch.tensor([list(maccs)], dtype=torch.float32)
-    return morgan_fp, maccs_fp
+# v3 FP-MLP head consumes pre-computed ChemBERT (768) molecular embeddings
+# stored in the per-row `metabolite_features` parquet column. The
+# embeddings are attached to each ligand graph in `ligand_init` from a
+# caller-supplied `smi2chembert` dict; see training/train_trace_kin.py
+# build_smi2chembert.
+CHEMBERT_DIM = 768
 
 fdefName = os.path.join(RDConfig.RDDataDir,'BaseFeatures.fdef')
 factory = ChemicalFeatures.BuildFeatureFactory(fdefName)
@@ -497,7 +482,6 @@ def smiles2graph(m_str):
     atom_feature, bond_feature = mgd.featurize(mol,'atom_full_feature')
     atom_idx, _ = mgd.featurize(mol,'atom_type')
     tree = mgd.junction_tree(mol)
-    morgan_fp, maccs_fp = _compute_fingerprints(mol)
 
     out_dict = {
         'smiles':m_str,
@@ -505,8 +489,6 @@ def smiles2graph(m_str):
         'atom_types':'|'.join([i.GetSymbol() for i in mol.GetAtoms()]),
         'atom_idx':torch.tensor(atom_idx),#.to(torch.int8),
         'bond_feature':torch.tensor(bond_feature),#.to(torch.int8),
-        'morgan_fp': morgan_fp,
-        'maccs_fp': maccs_fp,
     }
     tree['tree_edge_index'] = tree['tree_edge_index']#.to(torch.int8)
     tree['atom2clique_index'] = tree['atom2clique_index']#.to(torch.int8)
@@ -517,17 +499,40 @@ def smiles2graph(m_str):
     return out_dict
 ####
 
-def ligand_init(smiles_list):
+def ligand_init(smiles_list, smi2chembert=None):
+    """Build the per-SMILES ligand graph cache.
+
+    Parameters
+    ----------
+    smiles_list : list[str]
+        Unique SMILES to featurize.
+    smi2chembert : dict[str, np.ndarray] | None
+        SMILES -> ChemBERT (768,) embedding. When supplied (training/eval
+        path with --metabolite_feature_col set), each ligand entry is
+        annotated with `chembert_fp` of shape (1, 768) float32 — the v3
+        FP-MLP head consumes this directly. When omitted (legacy callers),
+        no chembert_fp is attached; the v3 forward will raise on missing
+        chembert_fp, which is the desired loud failure.
+    """
     ligand_dict = {}
     skipped_count = 0
     for smiles in tqdm(smiles_list):
         graph = smiles2graph(smiles)
-        if graph is not None:
-            ligand_dict[smiles] = graph
-        else:
+        if graph is None:
             skipped_count += 1
             print(f"⚠️  Skipped invalid SMILES: {smiles}")
-    
+            continue
+        if smi2chembert is not None:
+            if smiles not in smi2chembert:
+                raise KeyError(
+                    f"ChemBERT embedding missing for SMILES: {smiles!r}. "
+                    "All SMILES used at train/test time must have a non-null "
+                    "metabolite_features value in the parquet file."
+                )
+            vec = np.asarray(smi2chembert[smiles], dtype=np.float32).reshape(-1)
+            graph['chembert_fp'] = torch.from_numpy(vec).unsqueeze(0)  # (1, 768)
+        ligand_dict[smiles] = graph
+
     if skipped_count > 0:
         print(f"⚠️  Warning: Skipped {skipped_count} invalid SMILES strings")
 

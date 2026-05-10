@@ -392,10 +392,10 @@ def virtual_screening(screen_df, model, data_loader, result_path, save_interpret
                     residue_edge_weight=data.prot_edge_weight,
                     # Mol-Protein Interaction batch
                     mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
-                    # v3 RF-head fingerprints; v1 ignores these. Without them, v3
-                    # returns the bare GNN head whose outputs are only sensible
-                    # when blended with the RF head — producing wild test RMSE.
-                    morgan_fp=getattr(data, 'morgan_fp', None), maccs_fp=getattr(data, 'maccs_fp', None),
+                    # v3 FP-MLP ChemBERT embedding; v1 ignores this kwarg.
+                    # Without it, v3 raises rather than silently producing
+                    # the bare (uncalibrated) GNN head's output.
+                    chembert_fp=getattr(data, 'chembert_fp', None),
                     # save_cluster
                     save_cluster=save_cluster
             )

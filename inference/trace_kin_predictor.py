@@ -160,9 +160,8 @@ class TraceKinPredictor:
                     residue_edge_weight=batch.prot_edge_weight,
                     mol_batch=batch.mol_x_batch, prot_batch=batch.prot_node_aa_batch,
                     clique_batch=batch.clique_x_batch,
-                    # v3 RF-head fingerprints; v1 ignores these.
-                    morgan_fp=getattr(batch, 'morgan_fp', None),
-                    maccs_fp=getattr(batch, 'maccs_fp', None),
+                    # v3 FP-MLP ChemBERT embedding; v1 ignores this kwarg.
+                    chembert_fp=getattr(batch, 'chembert_fp', None),
                 )
                 value = reg_pred.squeeze().detach().cpu().item()
                 return {

@@ -238,9 +238,9 @@ class TraceKinV1(torch.nn.Module):
                 mol_batch=None, prot_batch=None, clique_batch=None,
                 ## only if you're interested in clustering algorithm
                 save_cluster = False,
-                # v3 dual-head fingerprints (ignored by v1; accepted so the same
-                # trainer call site works for both architectures)
-                morgan_fp=None, maccs_fp=None):
+                # v3 dual-head ChemBERT embedding (ignored by v1; accepted so
+                # the same trainer call site works for both architectures)
+                chembert_fp=None):
         # Init variables        
         reg_pred = None
         cls_pred = None
