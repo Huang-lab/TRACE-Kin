@@ -13,19 +13,20 @@
 #BSUB -L /bin/bash
 
 # =============================================================================
-# TRACE-Kin v3 + ChemBERT context residual smoke test
+# TRACE-Kin v3 + MoLFormer-XL context residual smoke test
 # =============================================================================
 # Submit with:
 #     bsub < training/run_v3_smoke_test.lsf
 #
-# Purpose: validate the v3-with-ChemBERT-context architecture end-to-end
+# Purpose: validate the v3-with-MoLFormer-XL-context pipeline end-to-end
 # on one cell before committing the 10-cell × 3-seed perfolder array.
 # Catches:
-#   - parquet `metabolite_features` parsing / build_smi2chembert
+#   - MoLFormer-XL HuggingFace load + tokenizer (transformers, trust_remote_code)
+#   - compute_molformer_embeddings live inference + cache write
 #   - chembert_fp shape (B, 768) flowing through MultiGraphData → trainer
 #   - net_v3 chembert_proj (Linear 768 → 200) + reg_out fresh head
 #   - zero-init chembert_proj means epoch 0 ≈ v1 baseline (sanity check)
-#   - virtual_screening + final test prediction CSV with the new kwarg
+#   - SWA enabled in config — confirm no crash even though smoke uses few epochs
 #
 # Runs train_trace_kin.py with a tiny sample (100 rows, 2 epochs) on one
 # fixed dataset so it finishes in a few minutes. Walltime capped at 30 min.
@@ -57,20 +58,22 @@ export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 # --- Knobs (override via env if desired) ------------------------------------
 ENZYME_BASE="${ENZYME_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset}"
 SMOKE_DATASET_DIR="${SMOKE_DATASET_DIR:-$ENZYME_BASE/MPEK_dataset/MPEK_kcat_ESMv1_embedding_random}"
-SMOKE_RESULT_BASE="${SMOKE_RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert_ctx/_smoke}"
+SMOKE_RESULT_BASE="${SMOKE_RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_molformer_ctx/_smoke}"
+MOLFORMER_PATH="${MOLFORMER_PATH:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/transformersmodels/ibm/MoLFormer-XL-both-10pct}"
 CONFIG_PATH="${CONFIG_PATH:-training/config_v3.json}"
 
 # --- Banner ------------------------------------------------------------------
 echo "=========================================="
-echo "TRACE-Kin v3 + ChemBERT Context Residual Smoke Test"
+echo "TRACE-Kin v3 + MoLFormer-XL Context Residual Smoke Test"
 echo "=========================================="
 echo "Date:               $(date)"
 echo "Dataset:            $SMOKE_DATASET_DIR"
 echo "Result dir:         $SMOKE_RESULT_BASE"
 echo "Config:             $CONFIG_PATH"
+echo "MoLFormer:          $MOLFORMER_PATH"
 echo "Sample size:        100 rows train / 50 test"
 echo "Epochs:             2"
-echo "ChemBERT context:   Linear(768 -> 200) added as residual to mol_pool"
+echo "Mol context:        Linear(768 -> 200) added as residual to mol_pool"
 echo "=========================================="
 
 python --version
@@ -91,9 +94,9 @@ rm -rf "$SMOKE_RESULT_BASE"
 mkdir -p "$SMOKE_RESULT_BASE"
 
 # --- Run a tiny v3 training -------------------------------------------------
-# --force_rebuild because the cached ligand.pt from prior runs may lack
-# chembert_fp; the in-memory backfill in preprocess() requires smi2chembert
-# to be populated which the smoke test confirms end-to-end.
+# --force_rebuild on the smoke test invalidates the molformer_emb.pt cache
+# in case a prior schema version is sitting next to the dataset folder.
+# Real perfolder runs share the same flag, so this matches behavior.
 python training/train_trace_kin.py \
     --datafolder "$SMOKE_DATASET_DIR" \
     --result_path "$SMOKE_RESULT_BASE" \
@@ -105,7 +108,7 @@ python training/train_trace_kin.py \
     --lrate 1e-4 \
     --protein_col Sequence \
     --feature_col protein_features \
-    --metabolite_feature_col metabolite_features \
+    --molformer_path "$MOLFORMER_PATH" \
     --ligand_col Smiles \
     --label_col Label \
     --regression_task \

@@ -40,6 +40,7 @@ from training.data_utils import (
 from training.dataset import ProteinMoleculeDataset
 from training.ligand_init import ligand_init
 from training.metrics import evaluate_reg
+from training.molformer_init import compute_molformer_embeddings
 from training.protein_init_with_embedding import protein_init_with_embedding
 from training.trainer import Trainer
 
@@ -69,8 +70,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ligand_col", type=str, default="Smiles")
     parser.add_argument("--label_col", type=str, default="Label")
     parser.add_argument("--metabolite_feature_col", type=str, default="metabolite_features",
-                        help="Per-row column with the pre-computed ChemBERT (768) molecular embedding "
-                             "consumed by the v3 FP-MLP head. Required for v3.")
+                        help="Per-row parquet column carrying a pre-computed molecular "
+                             "embedding (768-d). Used by v3's chembert_proj when "
+                             "--molformer_path is NOT set. Ignored when --molformer_path "
+                             "is set (live MoLFormer-XL inference replaces this column).")
+    parser.add_argument("--molformer_path", type=str, default="",
+                        help="Local path to a MoLFormer-XL HuggingFace snapshot (e.g., "
+                             "/sc/arion/.../transformersmodels/ibm/MoLFormer-XL-both-10pct). "
+                             "When set, molecular embeddings are computed via live "
+                             "MoLFormer inference and cached to <datafolder>/molformer_emb.pt, "
+                             "replacing the parquet metabolite_features column.")
 
     # Cross-dataset pooling for v2 catalytic kinetics. Each entry is the path
     # to an additional dataset folder whose train.{parquet,csv} is appended to
@@ -325,16 +334,41 @@ def load_split_dataframes(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
                               protein_col=args.protein_col, feature_col=args.feature_col)
     print(f"seq2feat: {len(seq2feat)} unique sequences.")
 
-    # ChemBERT (768) molecular embeddings for the v3 FP-MLP head. The
-    # parquet files written by the user pipeline carry these per-row in
-    # metabolite_features. Detect dim from train, then build the SMILES
-    # -> vector dict across all splits.
-    chembert_dim = detect_chembert_dim(train_df, args.metabolite_feature_col)
-    print(f"Detected chembert_dim = {chembert_dim}")
-    smi2chembert = build_smi2chembert(train_df, test_df, val_df,
-                                      ligand_col=args.ligand_col,
-                                      feature_col=args.metabolite_feature_col)
-    print(f"smi2chembert: {len(smi2chembert)} unique SMILES.")
+    # Molecular embeddings (768-d) for v3's chembert_proj. Two sources:
+    #
+    #  1. --molformer_path set: live MoLFormer-XL inference. Cached
+    #     per-cell at <datafolder>/molformer_emb.pt so multiple seeds
+    #     reuse the same compute.
+    #  2. --molformer_path empty: read pre-computed `metabolite_features`
+    #     column from the parquet files (legacy ChemBERT path).
+    #
+    # Either way the downstream model sees a (768,) vector per SMILES via
+    # the chembert_fp slot.
+    standard_smi_set = sorted({
+        *train_df[args.ligand_col],
+        *test_df[args.ligand_col],
+        *(val_df[args.ligand_col] if val_df is not None else []),
+    })
+    if args.molformer_path:
+        molformer_cache = os.path.join(args.datafolder, "molformer_emb.pt")
+        smi2chembert = compute_molformer_embeddings(
+            standard_smi_set,
+            model_path=args.molformer_path,
+            cache_path=molformer_cache,
+            force_rebuild=args.force_rebuild,
+            device=args.device,
+        )
+        # All MoLFormer-XL embeddings are 768-d; sample one to confirm.
+        sample = next(iter(smi2chembert.values()))
+        chembert_dim = int(sample.shape[-1])
+        print(f"MoLFormer embeddings: {len(smi2chembert)} unique SMILES, dim={chembert_dim}")
+    else:
+        chembert_dim = detect_chembert_dim(train_df, args.metabolite_feature_col)
+        print(f"Detected chembert_dim from {args.metabolite_feature_col} = {chembert_dim}")
+        smi2chembert = build_smi2chembert(train_df, test_df, val_df,
+                                          ligand_col=args.ligand_col,
+                                          feature_col=args.metabolite_feature_col)
+        print(f"smi2chembert (from parquet): {len(smi2chembert)} unique SMILES.")
 
     # Standardize column names for downstream code.
     train_df = normalize_columns(train_df, args.protein_col, args.ligand_col, args.label_col)
