@@ -1,0 +1,759 @@
+Sender: LSF System <lsfadmin@lg02e03>
+Subject: Job 242889490[1]: <trace_kin_v3_perfolder_s2[1-10]> in cluster <chimera> Done
+
+Job <trace_kin_v3_perfolder_s2[1-10]> was submitted from host <li04e01> by user <wangc40> in cluster <chimera> at Sun May 10 16:55:24 2026
+Job was executed on host(s) <16*lg02e03>, in queue <gpu>, as user <wangc40> in cluster <chimera> at Sun May 10 16:55:29 2026
+</hpc/users/wangc40> was used as the home directory.
+</sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE-Kin> was used as the working directory.
+Started at Sun May 10 16:55:29 2026
+Terminated at Sun May 10 17:17:41 2026
+Results reported at Sun May 10 17:17:41 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J trace_kin_v3_perfolder_s2[1-10]
+#BSUB -P acc_DiseaseGeneCell
+#BSUB -q gpu
+#BSUB -R h100nvl
+#BSUB -gpu num=1
+#BSUB -n 16
+#BSUB -R "rusage[mem=8000]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 48:00
+#BSUB -o %J.%I.stdout
+#BSUB -eo %J.%I.stderr
+#BSUB -L /bin/bash
+
+# =============================================================================
+# TRACE-Kin v3 PER-FOLDER + ChemBERT — top-10 RF-gap cells
+# =============================================================================
+# Submit with:
+#     bsub < training/run_v3_perfolder_s1.lsf
+#
+# Per-folder evaluation: each (dataset × kinetic × split) cell gets its own
+# v3 model trained ONLY on that folder's train.parquet, tested on that
+# folder's test.parquet. NO cross-dataset pooling — avoids the leakage
+# concern that pool-train rows could contaminate primary-test keys.
+#
+# v3 FP-MLP head input is mean-ESM (1280) ⊕ ChemBERT (768), loaded from
+# the per-row `metabolite_features` column of train/val/test.parquet —
+# apples-to-apples vs the historical ChemBERT-fed RF baseline.
+#
+# Cells: the 10 (out of 27) where the historical PSICHIC-vs-RF gap is
+# largest, derived from data/benchmark/kinetic_regress_benchmark_clean.csv.
+# These are the cells the ChemBERT cutover is most likely to move. The
+# embedding per cell is the one with the LOWEST RF baseline RMSE in the
+# benchmark (= the hardest fair test for v3). All 5 kinetics, all 3 splits,
+# and all 4 source datasets are represented.
+#
+# Ordered by descending RF-gap (PSICHIC RMSE − RF RMSE):
+#   1. EITLEM   kcat_km cold_drug    ESMv1       gap +0.135
+#   2. catpred  kcat    random       ESMv1       gap +0.130
+#   3. inhouse  Kd      random       ESMv1       gap +0.115
+#   4. EITLEM   kcat_km random       ESM2        gap +0.098
+#   5. EITLEM   kcat    cold_drug    ESM2        gap +0.093
+#   6. MPEK     kcat    cold_protein ProteinCLIP gap +0.092
+#   7. EITLEM   km      cold_protein ProteinCLIP gap +0.090
+#   8. catpred  ki      cold_protein ProteinCLIP gap +0.085
+#   9. EITLEM   kcat_km cold_protein ProteinCLIP gap +0.080
+#  10. EITLEM   kcat    cold_protein ProteinCLIP gap +0.073
+#
+# Outputs land under TRACE_Kin_Results_v3_chembert/<dataset>/<task_name>/
+# so they don't collide with the existing TRACE_Kin_Results_v3*/ trees.
+
+(... more ...)
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   1317.00 sec.
+    Max Memory :                                 18266 MB
+    Average Memory :                             14924.74 MB
+    Total Requested Memory :                     128000.00 MB
+    Delta Memory :                               109734.00 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                20
+    Run time :                                   1332 sec.
+    Turnaround time :                            1337 sec.
+
+The output (if any) follows:
+
+==========================================
+TRACE-Kin v3 PER-FOLDER task 1/10
+==========================================
+Date:        Sun May 10 16:55:32 EDT 2026
+Dataset:     /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_ESMv1_embedding_cold_drug
+Result:      /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert/EITLEM_dataset/EITLEM_kkm_ESMv1_embedding_cold_drug
+Config:      training/config_v3.json
+Pool CSVs:   (none — per-folder)
+Model:       v3 (per-folder, no pool, ChemBERT FP-MLP, best embedding by RF baseline)
+Epochs:      30, batch=16, seed=2, lr=1e-4
+==========================================
+Python 3.12.2
+Python: /sc/arion/work/wangc40/test-env/envs/test/bin/python
+CUDA device: NVIDIA H100 80GB HBM3, sm_90
+============================================================
+TRACE-Kin training
+============================================================
+Datafolder:        /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_ESMv1_embedding_cold_drug
+Result path:       /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert/EITLEM_dataset/EITLEM_kkm_ESMv1_embedding_cold_drug
+Config:            training/config_v3.json
+Pool train CSVs:   (none)
+============================================================
+Loading primary train: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_ESMv1_embedding_cold_drug/train.parquet
+Loading primary test: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_ESMv1_embedding_cold_drug/test.parquet
+Loading primary val: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_ESMv1_embedding_cold_drug/val.parquet
+Detected prot_evo_channels = 1280
+seq2feat: 6607 unique sequences.
+Detected chembert_dim = 768
+smi2chembert: 2924 unique SMILES.
+model_version: v3, use_swa: False
+Building protein graphs from scratch (this can be slow)...
+U, B, O, or 0 in Sequence
+U, B, O, or 0 in Sequence
+U, B, O, or 0 in Sequence
+U, B, O, or 0 in Sequence
+U, B, O, or 0 in Sequence
+U, B, O, or 0 in Sequence
+Building ligand graphs from scratch...
+loaders ready: train=610 test=156 val=93
+Computing PNA degrees from training data...
+Built TraceKinV3 with 7,143,003 parameters
+[LR schedule] schedule_lr=False, lrate=0.0001, min_lrate=0, warmup_iters=0, lr_decay_iters=18300, total_iters=18300
+Not in terminal, reprint now using normal build-in print function.
+                              
+                              
+----------------------------------------
+Epoch 001 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 2.9930, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.5892,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3849,
+    "mse": 3.0677,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.2695,
+    "regression_loss": 3.0649,
+    "rm2": 0.0722,
+    "rmse": 1.7515,
+    "sd": 1.7489,
+    "spearman": 0.2628,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.5744,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3044,
+    "mse": 2.7264,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.2193,
+    "regression_loss": 2.7193,
+    "rm2": 0.047,
+    "rmse": 1.6512,
+    "sd": 1.6459,
+    "spearman": 0.2196,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 002 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 2.7606, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6269,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3441,
+    "mse": 2.9682,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3615,
+    "regression_loss": 2.9538,
+    "rm2": 0.1228,
+    "rmse": 1.7228,
+    "sd": 1.6933,
+    "spearman": 0.3743,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.5923,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.287,
+    "mse": 2.7342,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.2557,
+    "regression_loss": 2.7269,
+    "rm2": 0.0652,
+    "rmse": 1.6535,
+    "sd": 1.6309,
+    "spearman": 0.2693,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 003 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 2.5799, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6373,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3081,
+    "mse": 2.7997,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3945,
+    "regression_loss": 2.7927,
+    "rm2": 0.1496,
+    "rmse": 1.6732,
+    "sd": 1.6687,
+    "spearman": 0.4047,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.5944,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2826,
+    "mse": 2.6473,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.2749,
+    "regression_loss": 2.6405,
+    "rm2": 0.0741,
+    "rmse": 1.6271,
+    "sd": 1.622,
+    "spearman": 0.2773,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 004 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 2.4165, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6525,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.291,
+    "mse": 2.7351,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.4154,
+    "regression_loss": 2.7304,
+    "rm2": 0.1708,
+    "rmse": 1.6538,
+    "sd": 1.6519,
+    "spearman": 0.448,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 005 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 2.2638, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6464,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2891,
+    "mse": 2.7505,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.4145,
+    "regression_loss": 2.7404,
+    "rm2": 0.1712,
+    "rmse": 1.6585,
+    "sd": 1.6527,
+    "spearman": 0.4304,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 006 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 2.1247, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6513,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2886,
+    "mse": 2.752,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.4173,
+    "regression_loss": 2.7631,
+    "rm2": 0.1659,
+    "rmse": 1.6589,
+    "sd": 1.6504,
+    "spearman": 0.4449,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 007 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 2.0013, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6448,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2965,
+    "mse": 2.8086,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.4078,
+    "regression_loss": 2.8144,
+    "rm2": 0.1536,
+    "rmse": 1.6759,
+    "sd": 1.6582,
+    "spearman": 0.4217,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 008 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 1.9266, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6459,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2949,
+    "mse": 2.8315,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.4072,
+    "regression_loss": 2.8378,
+    "rm2": 0.1515,
+    "rmse": 1.6827,
+    "sd": 1.6587,
+    "spearman": 0.4273,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 009 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 1.8443, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6333,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3264,
+    "mse": 2.9623,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3702,
+    "regression_loss": 2.9473,
+    "rm2": 0.1337,
+    "rmse": 1.7211,
+    "sd": 1.687,
+    "spearman": 0.3959,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 010 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 1.7595, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6364,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3139,
+    "mse": 2.9434,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3743,
+    "regression_loss": 2.9522,
+    "rm2": 0.1284,
+    "rmse": 1.7156,
+    "sd": 1.684,
+    "spearman": 0.3988,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 011 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 1.6739, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6438,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2968,
+    "mse": 2.8617,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3966,
+    "regression_loss": 2.8774,
+    "rm2": 0.1441,
+    "rmse": 1.6916,
+    "sd": 1.6671,
+    "spearman": 0.4184,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 012 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 1.6239, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6504,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2765,
+    "mse": 2.7707,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.4148,
+    "regression_loss": 2.7747,
+    "rm2": 0.1642,
+    "rmse": 1.6645,
+    "sd": 1.6524,
+    "spearman": 0.4373,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 013 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 1.5477, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6409,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3122,
+    "mse": 2.9724,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.39,
+    "regression_loss": 2.9731,
+    "rm2": 0.1513,
+    "rmse": 1.7241,
+    "sd": 1.6722,
+    "spearman": 0.407,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 014 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 1.5084, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6476,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2892,
+    "mse": 2.9113,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3983,
+    "regression_loss": 2.9541,
+    "rm2": 0.1429,
+    "rmse": 1.7063,
+    "sd": 1.6658,
+    "spearman": 0.4221,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+
+Early stopping at epoch 14 (no improvement for 10 epochs)
+[best epoch] epoch=4, best_rmse=1.6538, lr_at_best=1.000e-04
+                              
+                              
+----------------------------------------
+Epoch 014 with LR 0.000100: Model Results
+----------------------------------------
+Train MSE Loss: 1.5084, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.6476,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2892,
+    "mse": 2.9113,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3983,
+    "regression_loss": 2.9541,
+    "rm2": 0.1429,
+    "rmse": 1.7063,
+    "sd": 1.6658,
+    "spearman": 0.4221,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.6018,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.2867,
+    "mse": 2.6589,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.3066,
+    "regression_loss": 2.6526,
+    "rm2": 0.0876,
+    "rmse": 1.6306,
+    "sd": 1.6058,
+    "spearman": 0.298,
+    "spectral_loss": 0.0
+}
+Final test metrics: rmse=1.6306, pearson=0.3066, r2_proxy(mse)=2.6589
+Done. Predictions: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert/EITLEM_dataset/EITLEM_kkm_ESMv1_embedding_cold_drug/test_prediction_seed2.csv; checkpoint: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert/EITLEM_dataset/EITLEM_kkm_ESMv1_embedding_cold_drug/save_model_seed2/model.pt
+
+==========================================
+Array task 1/10: OK (EITLEM_kkm_ESMv1_embedding_cold_drug)
+==========================================
+
+
+PS:
+
+Read file <242889490.1.stderr> for stderr output of this job.
+
