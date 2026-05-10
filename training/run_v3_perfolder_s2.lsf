@@ -13,7 +13,7 @@
 #BSUB -L /bin/bash
 
 # =============================================================================
-# TRACE-Kin v3 PER-FOLDER + ChemBERT — top-10 RF-gap cells
+# TRACE-Kin v3 PER-FOLDER + ChemBERT context — top-10 RF-gap cells
 # =============================================================================
 # Submit with:
 #     bsub < training/run_v3_perfolder_s1.lsf
@@ -23,9 +23,12 @@
 # folder's test.parquet. NO cross-dataset pooling — avoids the leakage
 # concern that pool-train rows could contaminate primary-test keys.
 #
-# v3 FP-MLP head input is mean-ESM (1280) ⊕ ChemBERT (768), loaded from
-# the per-row `metabolite_features` column of train/val/test.parquet —
-# apples-to-apples vs the historical ChemBERT-fed RF baseline.
+# v3 = v1 GNN backbone + ChemBERT (768) projected to hidden_channels and
+# added as a global-graph-context residual to mol_pool, before a fresh
+# regression head. The previous FP-MLP/gate variant regressed (single MLP
+# can't decompose 768-d ChemBERT on small per-folder train sets); this
+# variant injects the ChemBERT signal via the GNN's pooled representation
+# instead. ChemBERT comes from per-row `metabolite_features` in parquet.
 #
 # Cells: the 10 (out of 27) where the historical PSICHIC-vs-RF gap is
 # largest, derived from data/benchmark/kinetic_regress_benchmark_clean.csv.
@@ -46,8 +49,9 @@
 #   9. EITLEM   kcat_km cold_protein ProteinCLIP gap +0.080
 #  10. EITLEM   kcat    cold_protein ProteinCLIP gap +0.073
 #
-# Outputs land under TRACE_Kin_Results_v3_chembert/<dataset>/<task_name>/
-# so they don't collide with the existing TRACE_Kin_Results_v3*/ trees.
+# Outputs land under TRACE_Kin_Results_v3_chembert_ctx/<dataset>/<task_name>/
+# so they don't collide with the prior FP-MLP TRACE_Kin_Results_v3_chembert/
+# tree or any older v3 results.
 # =============================================================================
 
 # --- Environment -------------------------------------------------------------
@@ -62,7 +66,7 @@ export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 
 # --- Knobs (env overrides) ---------------------------------------------------
 ENZYME_BASE="${ENZYME_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset}"
-RESULT_BASE="${RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert}"
+RESULT_BASE="${RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v3_chembert_ctx}"
 CONFIG_PATH="${CONFIG_PATH:-training/config_v3.json}"
 EPOCHS="${EPOCHS:-30}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
@@ -120,7 +124,7 @@ echo "Dataset:     $DATASET_DIR"
 echo "Result:      $RESULT_PATH"
 echo "Config:      $CONFIG_PATH"
 echo "Pool CSVs:   ${POOL_TRAIN_CSVS:-(none — per-folder)}"
-echo "Model:       v3 (per-folder, no pool, ChemBERT FP-MLP, best embedding by RF baseline)"
+echo "Model:       v3 (per-folder, no pool, ChemBERT context residual, best embedding by RF baseline)"
 echo "Epochs:      $EPOCHS, batch=$BATCH_SIZE, seed=$SEED, lr=$LRATE"
 echo "=========================================="
 
@@ -135,14 +139,11 @@ print(f"CUDA device: {torch.cuda.get_device_name(0)}, "
 PY
 
 # --- Train -------------------------------------------------------------------
-# --force_rebuild is unconditional for every seed: ligand.pt is co-located
-# with the dataset folder (--datafolder), not under RESULT_BASE, so a fresh
-# RESULT_BASE doesn't isolate the cache. Old caches from the morgan/maccs
-# era lack `chembert_fp` (the new code requires it) and contain unused
-# `morgan_fp`/`maccs_fp`. The in-memory backfill in preprocess() handles
-# the ChemBERT-missing case for s2/s3 read-only access, but rebuilding
-# unconditionally guarantees a consistent on-disk cache and avoids any
-# subtle race when multiple seeds touch the same dataset folder.
+# --force_rebuild stays unconditional. The ligand.pt cache lives next to
+# the dataset folder and stores chembert_fp per ligand. Even though the
+# in-memory backfill in preprocess() handles a stale cache, rebuilding
+# guarantees a consistent on-disk artifact across all 3 seeds and avoids
+# subtle races when multiple seeds touch the same dataset folder.
 EXTRA_ARGS=(--force_rebuild)
 if [ -n "$POOL_TRAIN_CSVS" ]; then
     EXTRA_ARGS+=(--pool_train_csvs "$POOL_TRAIN_CSVS")

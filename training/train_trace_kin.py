@@ -496,10 +496,6 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str):
             mol_deg, prot_deg,
             **common_kwargs,
             chembert_dim=params.get("chembert_dim", 768),
-            rf_head_hidden=tuple(params.get("rf_head_hidden", [512, 128])),
-            fp_dropout=params.get("fp_dropout"),
-            gate_hidden=params.get("gate_hidden", 64),
-            gate_init_bias=params.get("gate_init_bias", 0.0),
         )
     else:
         raise ValueError(f"Unknown model_version: {version!r}")

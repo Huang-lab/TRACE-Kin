@@ -1,5 +1,5 @@
 {
-    "_comment": "TRACE-Kin v3 config: dual-head architecture (v1 GNN + FP-MLP head fed ESM mean ⊕ ChemBERT 768) combined via a learned per-sample sigmoid gate. ChemBERT features come from per-row metabolite_features in the parquet files. fp_dropout (0.1) regularizes the FP-MLP head only — the GNN dropout stays at 0 to preserve v1 backbone behavior. patience=10 enables early stopping (FP-MLP head was overfitting to small per-folder train sets in the first ChemBERT runs, peaking by epoch ~10).",
+    "_comment": "TRACE-Kin v3 config: v1 GNN backbone + ChemBERT (768) global graph context. ChemBERT is projected to hidden_channels via a single zero-initialized Linear and added as a residual to mol_pool before a fresh regression head. The dual-head/gate variant was dropped because an MLP cannot decompose ChemBERT's dense 768-d embedding the way RF can on small per-folder train sets. ChemBERT features come from per-row metabolite_features in the parquet files. patience=10 enables early stopping (FP-MLP runs peaked by epoch ~10).",
     "model_version": "v3",
     "tasks": {
         "regression_task": false,
@@ -33,11 +33,7 @@
         "dropout": 0,
         "dropout_attn_score": 0.2,
         "heads": 5,
-        "chembert_dim": 768,
-        "rf_head_hidden": [512, 128],
-        "fp_dropout": 0.1,
-        "gate_hidden": 64,
-        "gate_init_bias": 0.0
+        "chembert_dim": 768
     },
     "swa": {
         "use_swa": false,
