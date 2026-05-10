@@ -218,11 +218,17 @@ def detect_chembert_dim(df: pd.DataFrame, feature_col: str) -> int:
 def build_smi2chembert(*dfs: pd.DataFrame, ligand_col: str, feature_col: str) -> dict:
     """Map SMILES -> ChemBERT (768,) numpy embedding from one or more DataFrames.
 
-    Fails loudly if the same SMILES appears with materially different
-    embedding vectors across rows — silent last-write-wins would mask data
-    pipeline bugs.
+    When the same SMILES appears with different ChemBERT vectors across
+    rows (data integrity issue in the upstream metabolite_features
+    column), keep the first-seen vector and emit a warning summarizing
+    the worst collisions. This is preferred over hard-failing because:
+    (a) the underlying parquet may have stale duplicates (e.g. small
+    SMILES like 'O' embedded inconsistently), and (b) a single bad
+    SMILES shouldn't kill an otherwise-valid training run. Investigate
+    the warnings if results look off.
     """
     smi2chembert: dict = {}
+    collisions: dict = {}  # smi -> max abs diff
     for df in dfs:
         if df is None:
             continue
@@ -235,13 +241,18 @@ def build_smi2chembert(*dfs: pd.DataFrame, ligand_col: str, feature_col: str) ->
                 continue
             arr = coerce_features_to_numpy(raw).reshape(-1)
             existing = smi2chembert.get(smi)
-            if existing is not None and not np.allclose(existing, arr, atol=1e-5):
-                raise ValueError(
-                    f"ChemBERT collision for SMILES {smi!r}: two different "
-                    f"vectors observed across rows (max abs diff "
-                    f"{float(np.max(np.abs(existing - arr))):.4g})."
-                )
+            if existing is not None:
+                if not np.allclose(existing, arr, atol=1e-5):
+                    diff = float(np.max(np.abs(existing - arr)))
+                    collisions[smi] = max(collisions.get(smi, 0.0), diff)
+                continue  # keep first-seen vector
             smi2chembert[smi] = arr
+    if collisions:
+        worst = sorted(collisions.items(), key=lambda kv: -kv[1])[:5]
+        print(f"WARN: {len(collisions)} SMILES had inconsistent ChemBERT "
+              f"vectors across rows; keeping first-seen vector for each. "
+              f"Worst 5 (smi, max abs diff): "
+              + ", ".join(f"({s!r}, {d:.3g})" for s, d in worst))
     return smi2chembert
 
 
@@ -486,6 +497,7 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str):
             **common_kwargs,
             chembert_dim=params.get("chembert_dim", 768),
             rf_head_hidden=tuple(params.get("rf_head_hidden", [512, 128])),
+            fp_dropout=params.get("fp_dropout"),
             gate_hidden=params.get("gate_hidden", 64),
             gate_init_bias=params.get("gate_init_bias", 0.0),
         )

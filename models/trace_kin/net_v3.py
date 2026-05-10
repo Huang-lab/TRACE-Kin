@@ -65,6 +65,7 @@ class TraceKinV3(nn.Module):
         # v3-specific args
         chembert_dim: int = 768,
         rf_head_hidden=(512, 128),
+        fp_dropout: float | None = None,
         gate_hidden: int = 64,
         gate_init_bias: float = 0.0,
     ):
@@ -99,11 +100,16 @@ class TraceKinV3(nn.Module):
 
         # FP-MLP head — same input channels as the historical ChemBERT-fed RF
         # baseline: mean-pooled raw protein embedding ⊕ ChemBERT (768).
+        # fp_dropout is independent of `dropout` (which feeds the GNN
+        # backbone) so we can regularize the head — which overfits small
+        # per-folder train sets — without perturbing the GNN. Falls back
+        # to `dropout` when not set, preserving prior behavior.
+        fp_drop = dropout if fp_dropout is None else fp_dropout
         rf_in_dim = prot_evo_channels + chembert_dim
         rf_layers = []
         prev = rf_in_dim
         for h in rf_head_hidden:
-            rf_layers += [nn.Linear(prev, h), nn.ReLU(), nn.Dropout(dropout)]
+            rf_layers += [nn.Linear(prev, h), nn.ReLU(), nn.Dropout(fp_drop)]
             prev = h
         rf_layers += [nn.Linear(prev, 1)]
         self.rf_head = nn.Sequential(*rf_layers)
