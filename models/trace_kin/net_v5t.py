@@ -23,6 +23,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from torch_geometric.nn import global_add_pool
 from torch_geometric.utils import degree, to_dense_batch
 from torch_geometric.utils import softmax as pyg_softmax
@@ -212,7 +213,7 @@ class TransformerBlock(nn.Module):
         self.rope = RotaryPositionalEncoding(self.d_k)
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Pre-norm Transformer with RoPE. (B, L, d_model) -> (B, L, d_model)."""
+        """Pre-norm Transformer with RoPE + Flash Attention. (B, L, d_model) -> (B, L, d_model)."""
         B, L, _ = x.shape
 
         # Self-attention with RoPE
@@ -224,14 +225,18 @@ class TransformerBlock(nn.Module):
         cos, sin = self.rope(L, x.device)
         Q, K = apply_rope(Q, K, cos, sin)
 
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
+        # Flash Attention: O(1) memory, never materializes L×L matrix.
+        # Convert padding mask to additive bias for SDPA efficiency.
+        attn_mask = None
         if mask is not None:
-            scores = scores.masked_fill(~mask[:, None, None, :], float('-inf'))
+            # (B, 1, 1, L) -> broadcast to (B, H, L, L) inside SDPA
+            attn_mask = torch.zeros(B, 1, 1, L, device=x.device, dtype=Q.dtype)
+            attn_mask.masked_fill_(~mask[:, None, None, :], float('-inf'))
 
-        attn = F.softmax(scores, dim=-1)
-        attn = self.attn_drop(attn)
+        dropout_p = self.attn_drop.p if self.training else 0.0
+        out = F.scaled_dot_product_attention(
+            Q, K, V, attn_mask=attn_mask, dropout_p=dropout_p)
 
-        out = torch.matmul(attn, V)
         out = out.transpose(1, 2).contiguous().view(B, L, self.d_model)
         out = self.W_O(out)
         x = x + out
@@ -302,6 +307,7 @@ class TraceKinV5T(nn.Module):
         self.multiclassification_head = multiclassification_head
         self.device = device
         self.learnable_aux_loss = False
+        self.gradient_checkpointing = True
 
         # Protein encoder
         self.prot_proj = nn.Linear(prot_evo_channels, d_model)
@@ -373,7 +379,11 @@ class TraceKinV5T(nn.Module):
         prot_h_dense, prot_mask = to_dense_batch(prot_h, prot_batch)
 
         for transformer_block in self.transformer_blocks:
-            prot_h_dense = transformer_block(prot_h_dense, mask=prot_mask)
+            if self.gradient_checkpointing and self.training:
+                prot_h_dense = grad_checkpoint(
+                    transformer_block, prot_h_dense, prot_mask, use_reentrant=False)
+            else:
+                prot_h_dense = transformer_block(prot_h_dense, mask=prot_mask)
 
         # === Ligand: PNA + MoLFormer ===
         atom_h, _ = self.drug_encoder(mol_x, mol_x_feat, bond_x, atom_edge_index, mol_batch)
