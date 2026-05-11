@@ -149,8 +149,12 @@ class TraceKinV3(nn.Module):
         # Mol-Protein Interaction batch
         mol_batch=None, prot_batch=None, clique_batch=None,
         save_cluster: bool = False,
-        # v3-specific: per-graph ChemBERT molecular embedding (768)
+        # v3-specific: per-graph ChemBERT/MoLFormer molecular embedding (768)
         chembert_fp: Optional[torch.Tensor] = None,
+        # v4-specific (ignored here; accepted so the trainer call site works
+        # for v1/v3/v4 without branching).
+        aa_typical_mean: Optional[torch.Tensor] = None,
+        aa_typical_std: Optional[torch.Tensor] = None,
     ):
         # 1. Run the GNN backbone. We use only its mol_pool / prot_pool /
         #    attention_dict; the backbone's own pred_gnn is discarded.

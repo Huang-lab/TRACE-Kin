@@ -138,6 +138,11 @@ class ProteinMoleculeDataset(Dataset):
             prot_node_pos = prot['node_pos']
             prot_edge_index = prot['edge_index']
             prot_edge_weight = prot['edge_weight']
+            ## v4 per-residue MutaPLM-typical mean/std (only present when
+            ## preprocess() was called with model_version="v4"; v1/v3
+            ## don't read these so missing-key fallback is fine).
+            aa_typical_mean = prot.get('aa_typical_mean')
+            aa_typical_std = prot.get('aa_typical_std')
         else:
             # MOL
             mol_x = mol['atom_idx'].long().view(-1, 1)
@@ -163,8 +168,11 @@ class ProteinMoleculeDataset(Dataset):
             prot_node_pos = torch.arange(len(prot['seq'])).reshape(-1,1)
             prot_edge_index = prot['edge_index']
             prot_edge_weight = prot['edge_weight'].float()
+            ## v4 per-residue MutaPLM-typical mean/std
+            aa_typical_mean = prot.get('aa_typical_mean')
+            aa_typical_std = prot.get('aa_typical_std')
 
-        out = MultiGraphData(
+        kwargs = dict(
                 ## MOLECULE
                 mol_x=mol_x, mol_x_feat=mol_x_feat, mol_edge_index=mol_edge_index,
                 mol_edge_attr=mol_edge_attr, mol_num_nodes= mol_num_nodes,
@@ -180,10 +188,16 @@ class ProteinMoleculeDataset(Dataset):
                 ## Y output
                 reg_y=reg_y, cls_y=cls_y, mcls_y=mcls_y,
                 ## keys
-                mol_key = mol_key, prot_key = prot_key
+                mol_key = mol_key, prot_key = prot_key,
         )
-
-        return out
+        ## v4 per-residue MutaPLM-typical mean/std (per-residue, shape
+        ## (L, D); PyG batches them along dim=0 alongside prot_node_evo).
+        ## Only attached when preprocess() was called with model_version="v4".
+        if aa_typical_mean is not None:
+            kwargs['aa_typical_mean'] = aa_typical_mean
+        if aa_typical_std is not None:
+            kwargs['aa_typical_std'] = aa_typical_std
+        return MultiGraphData(**kwargs)
 
 def maybe_num_nodes(index, num_nodes=None):
     # NOTE(WMF): I find out a problem here, 

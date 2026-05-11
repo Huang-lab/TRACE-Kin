@@ -238,9 +238,11 @@ class TraceKinV1(torch.nn.Module):
                 mol_batch=None, prot_batch=None, clique_batch=None,
                 ## only if you're interested in clustering algorithm
                 save_cluster = False,
-                # v3 dual-head ChemBERT embedding (ignored by v1; accepted so
-                # the same trainer call site works for both architectures)
-                chembert_fp=None):
+                # v3 dual-head ChemBERT embedding + v4 aa_typical (ignored by
+                # v1; accepted so the same trainer call site works for v1/v3/v4).
+                chembert_fp=None,
+                aa_typical_mean=None,
+                aa_typical_std=None):
         # Init variables        
         reg_pred = None
         cls_pred = None
@@ -382,12 +384,15 @@ class TraceKinV1(torch.nn.Module):
             'residue_layer_scores':residue_scores,
             'drug_atom_index':mol_batch,
             'drug_clique_index':clique_batch,
-            'protein_residue_index':prot_batch, 
+            'protein_residue_index':prot_batch,
             'mol_feature': mol_pool_feat,
             'prot_feature':prot_pool_feat,
             'interaction_fingerprint':mol_prot_feat,
-            'cluster_s': layer_s
-
+            'cluster_s': layer_s,
+            # v4 needs the post-GNN per-residue features (pre-pool) so it can
+            # compute its own pocket-attention pool. Exposing them here is
+            # additive and doesn't change v1 behavior.
+            'residue_x_post_gnn': residue_x,
         }
         
         return reg_pred, cls_pred, mcls_pred, spectral_loss, ortho_loss, cluster_loss, attention_dict

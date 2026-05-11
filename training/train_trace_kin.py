@@ -37,6 +37,7 @@ from training.data_utils import (
     compute_pna_degrees,
     virtual_screening,
 )
+from training.aa_typical import load_or_compute_aa_typical, per_residue_typical_tensors
 from training.dataset import ProteinMoleculeDataset
 from training.ligand_init import ligand_init
 from training.metrics import evaluate_reg
@@ -44,9 +45,9 @@ from training.molformer_init import compute_molformer_embeddings
 from training.protein_init_with_embedding import protein_init_with_embedding
 from training.trainer import Trainer
 
-# Both architecture variants are exposed by the package; we instantiate one
+# All architecture variants are exposed by the package; we instantiate one
 # based on the config's ``model_version`` field.
-from models.trace_kin import TraceKinV1, TraceKinV3
+from models.trace_kin import TraceKinV1, TraceKinV3, TraceKinV4
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mclassification_task", type=int, default=0)
 
     # Architecture / training behaviour switches
-    parser.add_argument("--model_version", type=str, choices=["v1", "v3"], default=None,
+    parser.add_argument("--model_version", type=str, choices=["v1", "v3", "v4"], default=None,
                         help="Override config 'model_version'. Defaults to whatever the config file specifies.")
     parser.add_argument("--use_swa", action="store_true", default=False,
                         help="Enable SWA (overrides config swa.use_swa).")
@@ -407,7 +408,7 @@ def load_split_dataframes(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
 # ---------------------------------------------------------------------------
 def preprocess(folder: str, proteins: list[str], ligands: list[str],
                seq2feat: dict, smi2chembert: dict,
-               force_rebuild: bool) -> tuple[dict, dict]:
+               force_rebuild: bool, model_version: str = "v3") -> tuple[dict, dict]:
     protein_path = os.path.join(folder, "protein.pt")
     ligand_path = os.path.join(folder, "ligand.pt")
 
@@ -418,6 +419,27 @@ def preprocess(folder: str, proteins: list[str], ligands: list[str],
         print("Building protein graphs from scratch (this can be slow)...")
         protein_dict = protein_init_with_embedding(proteins, seq2feat=seq2feat)
         torch.save(protein_dict, protein_path)
+
+    # v4 needs per-residue (mean, std) MutaPLM-typical tensors per protein.
+    # Compute aa_typical once across the whole protein corpus, then attach
+    # per-residue lookups to each protein's dict so the dataset/collator
+    # can carry them through batching alongside prot_node_evo.
+    if model_version == "v4":
+        aa_typical_path = os.path.join(folder, "aa_typical.pt")
+        aa_typical = load_or_compute_aa_typical(
+            cache_path=aa_typical_path,
+            protein_dict=protein_dict,
+            force_rebuild=force_rebuild,
+        )
+        # Attach per-residue mean/std tensors so the dataset can pass them
+        # through batching as per-residue features. Shape (L, D) per protein.
+        # Sniff D from the first protein's existing token_representation.
+        sample_seq = next(iter(protein_dict))
+        D = int(protein_dict[sample_seq]["token_representation"].shape[-1])
+        for seq, prot in protein_dict.items():
+            mean_t, std_t = per_residue_typical_tensors(prot["seq"], aa_typical, D)
+            prot["aa_typical_mean"] = mean_t
+            prot["aa_typical_std"] = std_t
 
     if os.path.exists(ligand_path) and not force_rebuild:
         print(f"Reusing ligand cache: {ligand_path}")
@@ -531,6 +553,13 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str):
             **common_kwargs,
             chembert_dim=params.get("chembert_dim", 768),
         )
+    elif version == "v4":
+        model = TraceKinV4(
+            mol_deg, prot_deg,
+            **common_kwargs,
+            chembert_dim=params.get("chembert_dim", 768),
+            pocket_hidden=params.get("pocket_hidden", 64),
+        )
     else:
         raise ValueError(f"Unknown model_version: {version!r}")
 
@@ -580,9 +609,12 @@ def main():
 
     print(f"model_version: {model_config['model_version']}, use_swa: {swa_block['use_swa']}")
 
-    # 3. Preprocess proteins/ligands (with cache).
+    # 3. Preprocess proteins/ligands (with cache). model_version controls
+    #    whether v4-specific aa_typical (per-residue MutaPLM mean/std) is
+    #    computed and attached to protein_dict.
     protein_dict, ligand_dict = preprocess(
-        args.datafolder, proteins, ligands, seq2feat, smi2chembert, args.force_rebuild
+        args.datafolder, proteins, ligands, seq2feat, smi2chembert,
+        args.force_rebuild, model_version=model_config["model_version"],
     )
 
     # 4. Build DataLoaders (with row filtering).

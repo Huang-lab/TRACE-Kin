@@ -1,0 +1,131 @@
+#!/bin/bash
+#BSUB -J trace_kin_v4_smoke
+#BSUB -P acc_DiseaseGeneCell
+#BSUB -q gpu
+#BSUB -R h100nvl
+#BSUB -gpu num=1
+#BSUB -n 8
+#BSUB -R "rusage[mem=8000]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 00:30
+#BSUB -o %J.v4_smoke.stdout
+#BSUB -eo %J.v4_smoke.stderr
+#BSUB -L /bin/bash
+
+# =============================================================================
+# TRACE-Kin v4 (MAP-GNN) smoke test
+# =============================================================================
+# Submit with:
+#     bsub < training/run_v4_smoke_test.lsf
+#
+# Purpose: validate the v4 architecture end-to-end on one cell before
+# committing the 10-cell × 3-seed perfolder array. Catches:
+#   - per-residue MutaPLM embedding loaded from parquet (must be 2D, not 1D)
+#   - aa_typical compute + cache write (<datafolder>/aa_typical.pt)
+#   - per-residue aa_typical_mean / aa_typical_std flowing through
+#     MultiGraphData → trainer → net_v4
+#   - novelty score computation, pocket attention forward pass
+#   - MoLFormer-XL HF load + chembert_proj residual still works
+#   - virtual_screening + final test prediction CSV
+#
+# Runs train_trace_kin.py with a tiny sample (100 rows, 2 epochs) on
+# the EITLEM kkm cold_drug MUTAPLM cell so it finishes in a few minutes.
+# Walltime capped at 30 min.
+#
+# After this job finishes, chain the perfolder arrays:
+#     bsub -w "done(<SMOKE_JOB_ID>)" < training/run_v4_perfolder_s1.lsf
+#     bsub < training/run_v4_perfolder_s2.lsf
+#     bsub < training/run_v4_perfolder_s3.lsf
+# =============================================================================
+
+# --- Environment -------------------------------------------------------------
+ml purge
+source ~/.bashrc
+module load anaconda3/2024.06
+source activate test
+module load cuda/12.4.0
+export RAYON_NUM_THREADS=4
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+
+# --- Knobs (override via env if desired) ------------------------------------
+ENZYME_BASE="${ENZYME_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset}"
+SMOKE_DATASET_DIR="${SMOKE_DATASET_DIR:-$ENZYME_BASE/EITLEM_dataset/EITLEM_kkm_MUTAPLM_embedding_cold_drug}"
+SMOKE_RESULT_BASE="${SMOKE_RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v4_mapgnn/_smoke}"
+MOLFORMER_PATH="${MOLFORMER_PATH:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/transformersmodels/ibm/MoLFormer-XL-both-10pct}"
+CONFIG_PATH="${CONFIG_PATH:-training/config_v4.json}"
+
+# --- Banner ------------------------------------------------------------------
+echo "=========================================="
+echo "TRACE-Kin v4 (MAP-GNN) Smoke Test"
+echo "=========================================="
+echo "Date:               $(date)"
+echo "Dataset:            $SMOKE_DATASET_DIR"
+echo "Result dir:         $SMOKE_RESULT_BASE"
+echo "Config:             $CONFIG_PATH"
+echo "MoLFormer:          $MOLFORMER_PATH"
+echo "Sample size:        100 rows train / 50 test"
+echo "Epochs:             2"
+echo "Architecture:       v1 GNN backbone + novelty + pocket attention + MoLFormer ctx residual"
+echo "=========================================="
+
+python --version
+echo "Python: $(which python)"
+
+# --- GPU smoke ---------------------------------------------------------------
+python - <<'PY'
+import sys, torch
+if not torch.cuda.is_available():
+    print("ERROR: CUDA not available."); sys.exit(86)
+name = torch.cuda.get_device_name(0)
+cap = torch.cuda.get_device_capability(0)
+print(f"CUDA device: {name}, sm_{cap[0]}{cap[1]}")
+PY
+
+# --- Wipe any prior smoke output so the success check is honest --------------
+rm -rf "$SMOKE_RESULT_BASE"
+mkdir -p "$SMOKE_RESULT_BASE"
+
+# --- Run a tiny v4 training -------------------------------------------------
+# --force_rebuild because v4 needs aa_typical.pt to exist; if a stale
+# one is sitting in the dataset folder, force regeneration.
+python training/train_trace_kin.py \
+    --datafolder "$SMOKE_DATASET_DIR" \
+    --result_path "$SMOKE_RESULT_BASE" \
+    --config_path "$CONFIG_PATH" \
+    --device cuda:0 \
+    --epochs 2 \
+    --batch_size 16 \
+    --seed 1 \
+    --lrate 1e-4 \
+    --protein_col Sequence \
+    --feature_col protein_features \
+    --molformer_path "$MOLFORMER_PATH" \
+    --ligand_col Smiles \
+    --label_col Label \
+    --regression_task \
+    --model_version v4 \
+    --sample_train 100 \
+    --sample_test 50 \
+    --force_rebuild
+
+# --- Pass/fail banner --------------------------------------------------------
+if ls "$SMOKE_RESULT_BASE"/test_prediction_seed*.csv 1>/dev/null 2>&1; then
+    echo ""
+    echo "=========================================="
+    echo "SMOKE TEST: PASS"
+    echo "Result file: $(ls "$SMOKE_RESULT_BASE"/test_prediction_seed*.csv)"
+    echo "Next: bsub -w \"done($LSB_JOBID)\" < training/run_v4_perfolder_s1.lsf"
+    echo "      bsub < training/run_v4_perfolder_s2.lsf"
+    echo "      bsub < training/run_v4_perfolder_s3.lsf"
+    echo "=========================================="
+    exit 0
+else
+    echo ""
+    echo "=========================================="
+    echo "SMOKE TEST: FAIL"
+    echo "No test_prediction_seed*.csv produced under $SMOKE_RESULT_BASE."
+    echo "Inspect $LSB_JOBID.v4_smoke.stderr before submitting the perfolder array."
+    echo "=========================================="
+    exit 1
+fi
