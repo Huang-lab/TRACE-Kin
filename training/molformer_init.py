@@ -1,8 +1,8 @@
-"""Compute MoLFormer-XL molecular embeddings for the v3 ChemBERT-context path.
+"""Compute MoLFormer-XL molecular embeddings for the v4 ChemBERT-context path.
 
 Replaces the parquet-loaded `metabolite_features` column with live
 inference against IBM's MoLFormer-XL-both-10pct (768-d output, same shape
-as ChemBERT, so v3's chembert_proj plumbing works unchanged).
+as ChemBERT, so v4's chembert_proj plumbing works unchanged).
 
 Uses a per-dataset-folder cache (`molformer_emb.pt`) so multiple seeds
 reuse the same embedding computation. The cache invalidates whenever the

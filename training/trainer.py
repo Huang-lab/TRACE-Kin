@@ -179,9 +179,9 @@ class Trainer(object):
                         residue_edge_weight=data.prot_edge_weight,
                         # Mol-Protein Interaction batch
                         mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
-                        # v3 FP-MLP ChemBERT/MoLFormer embedding; v1 ignores this kwarg.
+                        # v4 ChemBERT/MoLFormer molecular embedding; v1 ignores this kwarg.
                         chembert_fp=getattr(data, 'chembert_fp', None),
-                        # v4 per-residue amino-acid index (None for v1/v3).
+                        # v4 per-residue amino-acid index (None for v1).
                         prot_aa_idx=getattr(data, 'prot_aa_idx', None)
                     )
                     ## Loss compute
@@ -436,9 +436,9 @@ class Trainer(object):
                         residue_edge_weight=data.prot_edge_weight,
                         # Mol-Protein Interaction batch
                         mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
-                        # v3 FP-MLP ChemBERT/MoLFormer embedding; v1 ignores this kwarg.
+                        # v4 ChemBERT/MoLFormer molecular embedding; v1 ignores this kwarg.
                         chembert_fp=getattr(data, 'chembert_fp', None),
-                        # v4 per-residue amino-acid index (None for v1/v3).
+                        # v4 per-residue amino-acid index (None for v1).
                         prot_aa_idx=getattr(data, 'prot_aa_idx', None)
                     )
                     ## Loss compute
@@ -625,9 +625,9 @@ class Trainer(object):
                         residue_edge_weight=data.prot_edge_weight,
                         # Mol-Protein Interaction batch
                         mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
-                        # v3 FP-MLP ChemBERT/MoLFormer embedding; v1 ignores this kwarg.
+                        # v4 ChemBERT/MoLFormer molecular embedding; v1 ignores this kwarg.
                         chembert_fp=getattr(data, 'chembert_fp', None),
-                        # v4 per-residue amino-acid index (None for v1/v3).
+                        # v4 per-residue amino-acid index (None for v1).
                         prot_aa_idx=getattr(data, 'prot_aa_idx', None)
                     )
                 ## Loss compute
@@ -755,9 +755,9 @@ class Trainer(object):
                         residue_edge_weight=data.prot_edge_weight,
                         # Mol-Protein Interaction batch
                         mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
-                        # v3 FP-MLP ChemBERT/MoLFormer embedding; v1 ignores this kwarg.
+                        # v4 ChemBERT/MoLFormer molecular embedding; v1 ignores this kwarg.
                         chembert_fp=getattr(data, 'chembert_fp', None),
-                        # v4 per-residue amino-acid index (None for v1/v3).
+                        # v4 per-residue amino-acid index (None for v1).
                         prot_aa_idx=getattr(data, 'prot_aa_idx', None)
                 )
                 ## Loss compute

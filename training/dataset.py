@@ -58,12 +58,12 @@ class ProteinMoleculeDataset(Dataset):
                 v['tree_edge_index'] = v['tree_edge_index'].long()
                 v['atom2clique_index'] = v['atom2clique_index'].long()
 
-                ## v3 FP-MLP head: ChemBERT (768) embeddings live under
-                ## `chembert_fp` and are populated by training/ligand_init.py
-                ## from the per-row metabolite_features parquet column. No
-                ## backfill — if the cache predates the ChemBERT cutover,
-                ## rebuild via --force_rebuild. The v3 forward will raise
-                ## loudly if chembert_fp is missing at __getitem__ time.
+                ## v4 molecular embedding (ChemBERT or MoLFormer, 768-d) lives
+                ## under `chembert_fp` and is populated by training/ligand_init.py
+                ## from either the per-row metabolite_features parquet column
+                ## or live MoLFormer-XL inference. No backfill — if the cache
+                ## predates the ChemBERT cutover, rebuild via --force_rebuild.
+                ## The v4 forward raises loudly if chembert_fp is missing.
 
             for _, v in self.prots.items():
                 v['seq_feat'] = v['seq_feat'].float()  # 33-d, ~50 KB per protein, OK to upcast
@@ -132,7 +132,7 @@ class ProteinMoleculeDataset(Dataset):
             clique_edge_index = mol['tree_edge_index']
             atom2clique_index = mol['atom2clique_index']
 
-            ## v3 FP-MLP ChemBERT embedding (per-graph, shape (1, 768))
+            ## v4 molecular embedding (ChemBERT/MoLFormer, per-graph shape (1, 768))
             chembert_fp = mol['chembert_fp']
             ## Prot
             prot_seq = prot['seq']
@@ -150,7 +150,7 @@ class ProteinMoleculeDataset(Dataset):
             ## v4 per-residue amino-acid index (L,) — small int tensor
             ## that the model uses to look up aa_typical means/stds from
             ## its own (n_aa+1, D) buffers. Only present when preprocess()
-            ## was called with model_version="v4"; v1/v3 don't read it.
+            ## was called with model_version="v4"; v1 doesn't read it.
             prot_aa_idx = prot.get('prot_aa_idx')
         else:
             # MOL
@@ -167,7 +167,7 @@ class ProteinMoleculeDataset(Dataset):
             clique_edge_index = mol['tree_edge_index'].long()
             atom2clique_index = mol['atom2clique_index'].long()
 
-            ## v3 FP-MLP ChemBERT embedding (per-graph, shape (1, 768))
+            ## v4 molecular embedding (ChemBERT/MoLFormer, per-graph shape (1, 768))
             chembert_fp = mol['chembert_fp']
 
             prot_seq = prot['seq']
@@ -186,7 +186,7 @@ class ProteinMoleculeDataset(Dataset):
                 mol_edge_attr=mol_edge_attr, mol_num_nodes= mol_num_nodes,
                 clique_x=mol_x_clique, clique_edge_index=clique_edge_index, atom2clique_index=atom2clique_index,
                 clique_num_nodes=clique_num_nodes,
-                ## v3 FP-MLP ChemBERT embedding (per-graph, shape (1, 768); batch to (B, 768))
+                ## v4 molecular embedding (ChemBERT/MoLFormer, per-graph (1, 768); batch to (B, 768))
                 chembert_fp=chembert_fp,
                 ## PROTEIN
                 prot_node_aa=prot_node_aa, prot_node_evo=prot_node_evo,

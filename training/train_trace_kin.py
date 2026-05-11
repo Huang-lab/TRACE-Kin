@@ -1,19 +1,13 @@
 #!/usr/bin/env python
 """TRACE-Kin training entry point.
 
-Drives the v1 / v3 architecture switch and the cross-dataset pooling that
-applies to both. (The earlier v2 attempt regressed on 9 of 11 reruns and was
-removed; see PROJECT.md history.) Tier 1 and Tier 2 hyperparameter knobs
-that the failed ablation explored (``--patience``, ``--warmup_iters``,
-``--min_lrate``, ``--lr_decay_iters``, ``--dropout``,
-``--use_gated_prot_fusion``, ``--deep_regression_head``,
-``--learnable_aux_loss``) are intentionally removed — they did not move the
-needle and are now dead weight. The only training-time switches that matter
-are ``--model_version``, ``--use_swa``, and ``--pool_train_csvs``.
-
-The triple DataFrame load bug from the legacy script (load for embedding
-detection, load for seq2feat, load for create_data_loaders) is fixed: each
-input file is read at most once.
+Drives the v1 / v4 architecture switch and the cross-dataset pooling that
+applies to both. The v2 (shortcut concat) and v3 (FP-MLP / ChemBERT
+context-residual) attempts were removed after empirical results showed
+they didn't beat v1 on enough cells to justify keeping them; see
+PROJECT.md history. The only training-time switches that matter are
+``--model_version``, ``--use_swa``, ``--pool_train_csvs``, and
+``--molformer_path``.
 """
 
 from __future__ import annotations
@@ -47,7 +41,7 @@ from training.trainer import Trainer
 
 # All architecture variants are exposed by the package; we instantiate one
 # based on the config's ``model_version`` field.
-from models.trace_kin import TraceKinV1, TraceKinV3, TraceKinV4
+from models.trace_kin import TraceKinV1, TraceKinV4
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +49,7 @@ from models.trace_kin import TraceKinV1, TraceKinV3, TraceKinV4
 # ---------------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train TRACE-Kin (v1 baseline or v3 dual-head) on a kinetic-regression dataset.",
+        description="Train TRACE-Kin (v1 baseline or v4 MAP-GNN) on a kinetic-regression dataset.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -64,7 +58,7 @@ def parse_args() -> argparse.Namespace:
                         help="Primary dataset folder (must contain train.{parquet,csv} and test.{parquet,csv}).")
     parser.add_argument("--result_path", type=str, required=True,
                         help="Where to write checkpoints, predictions, logs.")
-    parser.add_argument("--config_path", type=str, default="training/config_v3.json",
+    parser.add_argument("--config_path", type=str, default="training/config_v4.json",
                         help="Path to model config JSON.")
     parser.add_argument("--protein_col", type=str, default="Sequence")
     parser.add_argument("--feature_col", type=str, default="protein_features")
@@ -72,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label_col", type=str, default="Label")
     parser.add_argument("--metabolite_feature_col", type=str, default="metabolite_features",
                         help="Per-row parquet column carrying a pre-computed molecular "
-                             "embedding (768-d). Used by v3's chembert_proj when "
+                             "embedding (768-d). Used by v4's chembert_proj when "
                              "--molformer_path is NOT set. Ignored when --molformer_path "
                              "is set (live MoLFormer-XL inference replaces this column).")
     parser.add_argument("--molformer_path", type=str, default="",
@@ -103,7 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mclassification_task", type=int, default=0)
 
     # Architecture / training behaviour switches
-    parser.add_argument("--model_version", type=str, choices=["v1", "v3", "v4"], default=None,
+    parser.add_argument("--model_version", type=str, choices=["v1", "v4"], default=None,
                         help="Override config 'model_version'. Defaults to whatever the config file specifies.")
     parser.add_argument("--use_swa", action="store_true", default=False,
                         help="Enable SWA (overrides config swa.use_swa).")
@@ -489,7 +483,7 @@ def _build_smi2chembert_lazy(args, paths, ligands) -> dict:
 # Preprocessing cache (protein.pt / ligand.pt)
 # ---------------------------------------------------------------------------
 def preprocess(args, paths: dict, proteins: list[str], ligands: list[str],
-               model_version: str = "v3") -> tuple[dict, dict, dict | None]:
+               model_version: str = "v4") -> tuple[dict, dict, dict | None]:
     """Build/load protein.pt, ligand.pt, and (v4) aa_typical caches.
 
     seq2feat (~21 GB at MutaPLM 4096-d × 6607 unique seqs) is built
@@ -642,7 +636,7 @@ def make_loaders(train_df, test_df, val_df, ligand_dict, protein_dict,
 # ---------------------------------------------------------------------------
 def build_model(model_config: dict, mol_deg, prot_deg, device: str,
                 aa_typical_buffers: dict | None = None):
-    """Instantiate v1 / v3 / v4 from the config.
+    """Instantiate v1 or v4 from the config.
 
     For v4, ``aa_typical_buffers`` (containing ``aa_means`` and ``aa_stds``
     tensors) is registered onto the model as buffers via ``register_buffer``
@@ -680,12 +674,6 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str,
             use_gated_prot_fusion=params.get("use_gated_prot_fusion", False),
             deep_regression_head=params.get("deep_regression_head", False),
             learnable_aux_loss=params.get("learnable_aux_loss", False),
-        )
-    elif version == "v3":
-        model = TraceKinV3(
-            mol_deg, prot_deg,
-            **common_kwargs,
-            chembert_dim=params.get("chembert_dim", 768),
         )
     elif version == "v4":
         model = TraceKinV4(

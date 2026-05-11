@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 
-# v3 FP-MLP head consumes pre-computed ChemBERT (768) molecular embeddings
+# v4 consumes ChemBERT (or MoLFormer-XL, also 768-d) molecular embeddings
 # stored in the per-row `metabolite_features` parquet column. The
 # embeddings are attached to each ligand graph in `ligand_init` from a
 # caller-supplied `smi2chembert` dict; see training/train_trace_kin.py
@@ -509,9 +509,9 @@ def ligand_init(smiles_list, smi2chembert=None):
     smi2chembert : dict[str, np.ndarray] | None
         SMILES -> ChemBERT (768,) embedding. When supplied (training/eval
         path with --metabolite_feature_col set), each ligand entry is
-        annotated with `chembert_fp` of shape (1, 768) float32 — the v3
-        FP-MLP head consumes this directly. When omitted (legacy callers),
-        no chembert_fp is attached; the v3 forward will raise on missing
+        annotated with `chembert_fp` of shape (1, 768) float32 — v4's
+        chembert_proj consumes this directly. When omitted (legacy callers),
+        no chembert_fp is attached; the v4 forward will raise on missing
         chembert_fp, which is the desired loud failure.
     """
     ligand_dict = {}

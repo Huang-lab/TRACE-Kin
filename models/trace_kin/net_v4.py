@@ -1,6 +1,7 @@
 """TRACE-Kin v4: MAP-GNN — Mutation-Aware Pocket GNN.
 
-Three architectural changes from v3-MoLFormer:
+Three architectural pillars on top of v1's GNN backbone (the v2/v3
+context-residual/FP-MLP attempts were tried and removed; see PROJECT.md):
 
 1. **Per-residue novelty score**. For each residue, compute
    ``||MutaPLM[r] - aa_typical_mean[aa[r]]|| / aa_typical_std[aa[r]]``,
@@ -21,14 +22,14 @@ Three architectural changes from v3-MoLFormer:
    attention_dict (added to v1 in a non-invasive manner — see
    net_v1.py 'residue_x_post_gnn' key).
 
-What's preserved from v3-MoLFormer:
+What's preserved from the v3 experiments (kept as part of v4's design):
 - v1 GNN backbone (PNAConv ×3 over contact map; MotifPool ×3 on drug)
 - MoLFormer/ChemBERT context residual added to mol_pool
 - Multi-seed ensemble; per-folder eval; no auxiliary GNN losses
 
-The chembert_proj weight is zero-initialized as in v3, so the model
-starts at v1+novelty-injection baseline; the MoLFormer signal wakes
-up only as training discovers it. The pocket attention starts as
+The chembert_proj weight is zero-initialized so the model starts at
+v1+novelty-injection baseline; the MoLFormer signal wakes up only as
+training discovers it. The pocket attention starts as
 softmax over uniform logits (Linear weights at default init), so the
 initial pool is approximately uniform across residues — gradually
 sharpens as training assigns higher logits to functionally-important
@@ -129,8 +130,9 @@ class TraceKinV4(nn.Module):
             nn.Linear(pocket_hidden, 1),
         )
 
-        # Molecular context residual (preserved from v3). Zero-init so v4
-        # starts at v1+novelty baseline; chembert signal wakes up gradually.
+        # Molecular context residual (ChemBERT/MoLFormer 768-d). Zero-init
+        # so v4 starts at v1+novelty baseline; chembert signal wakes up
+        # gradually as training discovers it.
         self.chembert_proj = nn.Linear(chembert_dim, hidden_channels)
         with torch.no_grad():
             self.chembert_proj.weight.zero_()
@@ -169,7 +171,7 @@ class TraceKinV4(nn.Module):
         # Mol-Protein Interaction batch
         mol_batch=None, prot_batch=None, clique_batch=None,
         save_cluster: bool = False,
-        # v3-style ChemBERT/MoLFormer molecular embedding
+        # ChemBERT/MoLFormer molecular embedding (768-d)
         chembert_fp: Optional[torch.Tensor] = None,
         # v4-specific: per-residue amino-acid index (L,) into the model's
         # aa_typical_means/stds buffers. Looked up via index_select inside
@@ -191,7 +193,7 @@ class TraceKinV4(nn.Module):
         mol_pool = attention_dict["mol_feature"]                  # (B, hidden)
         residue_h = attention_dict["residue_x_post_gnn"]          # (N_res, hidden)
 
-        # Drop MinCut auxiliary losses (same rationale as v3). Trainer
+        # Drop MinCut auxiliary losses. Trainer
         # weights them at 1.0; leaving them non-zero would make the
         # optimizer minimize aux-loss instead of regression loss.
         zero_loss = mol_pool.new_zeros(())
@@ -264,7 +266,7 @@ class TraceKinV4(nn.Module):
         )                                                           # (B, hidden)
 
         # 6. MoLFormer/ChemBERT context residual on mol_pool (preserved
-        #    from v3). Squeeze (B, 1, D) → (B, D) when PyG batches the
+        #    Squeeze (B, 1, D) → (B, D) when PyG batches the
         #    per-graph (1, D) cache to (B, 1, D).
         chembert = chembert_fp.float()
         if chembert.dim() == 3:
@@ -286,11 +288,11 @@ class TraceKinV4(nn.Module):
         return reg_pred, cls_pred, mcls_pred, sp_loss, o_loss, cl_loss, attention_dict
 
     def temperature_clamp(self):
-        # No learnable temperature; mirror v1/v3.
+        # No learnable temperature; mirror v1.
         pass
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, eps, amsgrad):
-        """Same decay/no-decay grouping as v1/v3, walking v4's modules.
+        """Same decay/no-decay grouping as v1, walking v4's modules.
 
         Biases and Norm/Embedding weights skip weight decay; Linear weights
         get weight decay.
