@@ -274,6 +274,7 @@ class TraceKinV5T(nn.Module):
         n_cross_heads: int = 8,
         chembert_dim: int = 768,
         dropout: float = 0.1,
+        input_dropout: float = 0.15,
         regression_head: bool = True,
         classification_head: bool = False,
         multiclassification_head: int = 0,
@@ -312,6 +313,7 @@ class TraceKinV5T(nn.Module):
         # Protein encoder
         self.prot_proj = nn.Linear(prot_evo_channels, d_model)
         self.prot_proj_norm = nn.LayerNorm(d_model)
+        self.input_drop = nn.Dropout(input_dropout)
         self.graph_pe = GraphStructuralEncoding(d_model, rwse_steps=graph_pe_rwse_steps)
 
         self.transformer_blocks = nn.ModuleList([
@@ -373,6 +375,7 @@ class TraceKinV5T(nn.Module):
 
         # === Protein: project + graph PE + Transformer self-attention ===
         prot_h = self.prot_proj_norm(self.prot_proj(residue_evo_x.float()))
+        prot_h = self.input_drop(prot_h)
         graph_pe = self.graph_pe(residue_edge_index, num_nodes=prot_h.size(0))
         prot_h = prot_h + graph_pe
 
@@ -389,7 +392,7 @@ class TraceKinV5T(nn.Module):
         atom_h, _ = self.drug_encoder(mol_x, mol_x_feat, bond_x, atom_edge_index, mol_batch)
 
         if chembert_fp is not None:
-            ctx = self.mol_context_proj(chembert_fp.float())
+            ctx = self.input_drop(self.mol_context_proj(chembert_fp.float()))
             if ctx.dim() == 3:
                 ctx = ctx.squeeze(1)
             atom_h = atom_h + ctx[mol_batch]
