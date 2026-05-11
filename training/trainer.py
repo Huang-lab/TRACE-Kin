@@ -700,15 +700,15 @@ class Trainer(object):
             eval_result['cluster_loss'] = eval_cluster_loss
 
         if len(reg_truths) > 0:
-            reg_preds = torch.cat(reg_preds).detach().cpu().numpy()
-            reg_truths = torch.cat(reg_truths).detach().cpu().numpy()
+            reg_preds = torch.cat(reg_preds).detach().float().cpu().numpy()
+            reg_truths = torch.cat(reg_truths).detach().float().cpu().numpy()
             eval_reg_result = evaluate_reg(reg_truths, reg_preds)
             eval_result.update(eval_reg_result)
 
         if len(cls_truths) > 0:
-            cls_preds = torch.sigmoid(torch.cat(cls_preds)).detach().cpu().numpy()
-            cls_truths = torch.cat(cls_truths).detach().cpu().numpy()
-        
+            cls_preds = torch.sigmoid(torch.cat(cls_preds)).detach().float().cpu().numpy()
+            cls_truths = torch.cat(cls_truths).detach().float().cpu().numpy()
+
             eval_cls_result = evaluate_cls(cls_truths, cls_preds, threshold=0.5)
             eval_result.update(eval_cls_result)
 
@@ -720,7 +720,7 @@ class Trainer(object):
                 mcls_truths = mcls_truths[mask]
                 mcls_truths = mcls_truths.long().detach().cpu().numpy()
                 mcls_preds = mcls_preds[mask]
-                mcls_preds = mcls_preds.detach().cpu().numpy()
+                mcls_preds = mcls_preds.detach().float().cpu().numpy()
                 eval_mcls_result = evaluate_mcls(mcls_truths, mcls_preds)
                 eval_result.update(eval_mcls_result)
 
@@ -839,8 +839,8 @@ class Trainer(object):
             eval_result['cluster_loss'] = eval_cluster_loss
 
         if len(reg_truths) > 0:
-            reg_preds = torch.cat(reg_preds).detach().cpu().numpy()
-            reg_truths = torch.cat(reg_truths).detach().cpu().numpy()
+            reg_preds = torch.cat(reg_preds).detach().float().cpu().numpy()
+            reg_truths = torch.cat(reg_truths).detach().float().cpu().numpy()
             try:
                 eval_reg_result = evaluate_reg(reg_truths, reg_preds)
             except:
@@ -848,8 +848,8 @@ class Trainer(object):
             eval_result.update(eval_reg_result)
 
         if len(cls_truths) > 0:
-            cls_preds = torch.sigmoid(torch.cat(cls_preds)).detach().cpu().numpy()
-            cls_truths = torch.cat(cls_truths).detach().cpu().numpy()
+            cls_preds = torch.sigmoid(torch.cat(cls_preds)).detach().float().cpu().numpy()
+            cls_truths = torch.cat(cls_truths).detach().float().cpu().numpy()
             try:
                 eval_cls_result = evaluate_cls(cls_truths, cls_preds, threshold=0.5)
             except: 
@@ -864,7 +864,7 @@ class Trainer(object):
                 mcls_truths = mcls_truths[mask]
                 mcls_truths = mcls_truths.long().detach().cpu().numpy()
                 mcls_preds = mcls_preds[mask]
-                mcls_preds = mcls_preds.detach().cpu().numpy()
+                mcls_preds = mcls_preds.detach().float().cpu().numpy()
                 try:
                     eval_mcls_result = evaluate_mcls(mcls_truths, mcls_preds)
                 except:
@@ -918,13 +918,13 @@ def store_attention_result(attention_dict, keys, reg_tuples=None, cls_tuples=Non
 
     for idx, key in enumerate(keys):
         interpret_dict[key] = {
-            'residue_score': unbatched_residue_score[idx].detach().cpu().numpy(),
-            'atom_score':unbatched_atom_score[idx].detach().cpu().numpy(),
-            'residue_layer':unbatched_residue_layer_score[idx].detach().cpu().numpy(),
-            'clique_layer':unbatched_clique_layer_score[idx].detach().cpu().numpy(),
-            'mol_feature':attention_dict['mol_feature'][idx].detach().cpu().numpy(),
-            'prot_feature':attention_dict['prot_feature'][idx].detach().cpu().numpy(),
-            'interaction_fingerprint':attention_dict['interaction_fingerprint'][idx].detach().cpu().numpy(),
+            'residue_score': unbatched_residue_score[idx].detach().float().cpu().numpy(),
+            'atom_score':unbatched_atom_score[idx].detach().float().cpu().numpy(),
+            'residue_layer':unbatched_residue_layer_score[idx].detach().float().cpu().numpy(),
+            'clique_layer':unbatched_clique_layer_score[idx].detach().float().cpu().numpy(),
+            'mol_feature':attention_dict['mol_feature'][idx].detach().float().cpu().numpy(),
+            'prot_feature':attention_dict['prot_feature'][idx].detach().float().cpu().numpy(),
+            'interaction_fingerprint':attention_dict['interaction_fingerprint'][idx].detach().float().cpu().numpy(),
         }
         if cls_tuples:
             interpret_dict[key]['classification_truth'] = cls_tuples[idx][0].item()
