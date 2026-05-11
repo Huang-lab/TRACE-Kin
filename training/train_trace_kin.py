@@ -41,7 +41,7 @@ from training.trainer import Trainer
 
 # All architecture variants are exposed by the package; we instantiate one
 # based on the config's ``model_version`` field.
-from models.trace_kin import TraceKinV1, TraceKinV4
+from models.trace_kin import TraceKinV1, TraceKinV4, TraceKinV5
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mclassification_task", type=int, default=0)
 
     # Architecture / training behaviour switches
-    parser.add_argument("--model_version", type=str, choices=["v1", "v4"], default=None,
+    parser.add_argument("--model_version", type=str, choices=["v1", "v4", "v5"], default=None,
                         help="Override config 'model_version'. Defaults to whatever the config file specifies.")
     parser.add_argument("--use_swa", action="store_true", default=False,
                         help="Enable SWA (overrides config swa.use_swa).")
@@ -687,11 +687,29 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str,
                 "v4 requires aa_typical_buffers (computed in preprocess); "
                 "got None. Check that preprocess() ran with model_version='v4'."
             )
-        # Register buffers AFTER model creation but BEFORE .to(device), so
-        # the buffers move with the model. register_buffer auto-saves with
-        # state_dict and auto-moves on .to(device).
         model.register_buffer("aa_typical_means", aa_typical_buffers["aa_means"])
         model.register_buffer("aa_typical_stds", aa_typical_buffers["aa_stds"])
+    elif version == "v5":
+        model = TraceKinV5(
+            mol_deg, prot_deg,
+            prot_evo_channels=params["prot_evo_channels"],
+            d_model=params.get("d_model", 512),
+            n_mamba_layers=params.get("n_mamba_layers", 4),
+            mamba_expand=params.get("mamba_expand", 2),
+            mamba_d_state=params.get("mamba_d_state", 16),
+            mamba_d_conv=params.get("mamba_d_conv", 4),
+            graph_pe_rwse_steps=params.get("graph_pe_rwse_steps", 16),
+            mol_in_channels=params["mol_in_channels"],
+            n_drug_pna_layers=params.get("n_drug_pna_layers", 3),
+            n_cross_heads=params.get("n_cross_heads", 8),
+            chembert_dim=params.get("chembert_dim", 768),
+            dropout=params.get("dropout", 0.1),
+            regression_head=tasks["regression_task"],
+            classification_head=tasks["classification_task"],
+            multiclassification_head=tasks["mclassification_task"],
+            device=device,
+            heads=params.get("heads", 5),
+        )
     else:
         raise ValueError(f"Unknown model_version: {version!r}")
 

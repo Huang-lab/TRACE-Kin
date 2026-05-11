@@ -1,0 +1,51 @@
+{
+    "_comment": "TRACE-Kin v5: Bidirectional Graph-Mamba + Cross-Attention. MutaPLM per-residue (4096-d) -> Linear(512) -> BiMamba x4 with graph-gated aggregation from contact map -> cross-attention with ligand atoms -> substrate-conditioned pooling -> regression. Ligand: PNA GNN + MoLFormer-XL (768-d) context. No auxiliary losses (MinCut removed). LR warmup + cosine decay for Mamba stability.",
+    "model_version": "v5",
+    "tasks": {
+        "regression_task": false,
+        "classification_task": false,
+        "mclassification_task": 0
+    },
+    "optimizer": {
+        "lrate": 0.0003,
+        "weight_decay": 0.01,
+        "clip": 1,
+        "betas": [0.9, 0.999],
+        "eps": 1e-08,
+        "schedule_lr": true,
+        "min_lrate": 1e-06,
+        "warmup_iters": 0,
+        "lr_decay_iters": null,
+        "amsgrad": false,
+        "patience": 15
+    },
+    "params": {
+        "mol_in_channels": 43,
+        "prot_in_channels": 33,
+        "prot_evo_channels": 4096,
+        "hidden_channels": 200,
+        "d_model": 512,
+        "n_mamba_layers": 4,
+        "mamba_expand": 2,
+        "mamba_d_state": 16,
+        "mamba_d_conv": 4,
+        "graph_pe_rwse_steps": 16,
+        "n_drug_pna_layers": 3,
+        "n_cross_heads": 8,
+        "chembert_dim": 768,
+        "dropout": 0.1,
+        "aggregators": ["mean", "min", "max", "std"],
+        "scalers": ["identity", "amplification", "linear"],
+        "pre_layers": 2,
+        "post_layers": 1,
+        "total_layer": 3,
+        "K": [5, 10, 20],
+        "dropout_attn_score": 0.2,
+        "heads": 5
+    },
+    "swa": {
+        "use_swa": false,
+        "swa_start_frac": 0.5,
+        "swa_lr_factor": 0.1
+    }
+}
