@@ -223,7 +223,7 @@ class DrugPNAEncoder(nn.Module):
     """Ligand GNN encoder using PNA (same validated architecture as v1 drug branch)."""
 
     def __init__(self, mol_in_channels: int, d_model: int, mol_deg: torch.Tensor,
-                 n_layers: int = 3, heads: int = 5, dropout: float = 0.1):
+                 n_layers: int = 3, heads: int = 8, dropout: float = 0.1):
         super().__init__()
         from .pna import PNAConv
         from torch_geometric.nn.norm import GraphNorm
@@ -300,7 +300,7 @@ class TraceKinV5(nn.Module):
         total_layer: int = 3,
         K=None,
         t: int = 1,
-        heads: int = 5,
+        heads: int = 8,
         dropout_attn_score: float = 0.2,
         drop_atom: float = 0.0,
         drop_residue: float = 0.0,
