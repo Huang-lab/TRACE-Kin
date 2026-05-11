@@ -30,6 +30,47 @@ from .layers import MLP
 
 
 # ---------------------------------------------------------------------------
+# Optimized selective scan (torch.compile fuses into efficient CUDA graph)
+# ---------------------------------------------------------------------------
+
+@torch.compile(mode="default", fullgraph=False)
+def _selective_scan_seq(
+    x_conv: torch.Tensor,   # (B, L, d_inner)
+    dt: torch.Tensor,       # (B, L, d_inner)
+    A: torch.Tensor,        # (d_inner, d_state)
+    B_in: torch.Tensor,     # (B, L, d_state)
+    C_in: torch.Tensor,     # (B, L, d_state)
+) -> torch.Tensor:
+    """Sequential scan optimized for torch.compile fusion.
+
+    Keeps the sequential structure (unavoidable for recurrence) but
+    enables the compiler to fuse element-wise ops and reduce kernel
+    launch overhead via Triton codegen.
+    """
+    B, L, d_inner = x_conv.shape
+    d_state = B_in.shape[-1]
+
+    # Pre-expand A for broadcasting: (1, d_inner, d_state)
+    A_exp = A.unsqueeze(0)
+
+    h = torch.zeros(B, d_inner, d_state, device=x_conv.device, dtype=x_conv.dtype)
+    outputs = torch.empty(B, L, d_inner, device=x_conv.device, dtype=x_conv.dtype)
+
+    for t in range(L):
+        dt_t = dt[:, t, :].unsqueeze(-1)           # (B, d_inner, 1)
+        B_t = B_in[:, t, :].unsqueeze(1)           # (B, 1, d_state)
+        C_t = C_in[:, t, :]                        # (B, d_state)
+        x_t = x_conv[:, t, :].unsqueeze(-1)        # (B, d_inner, 1)
+
+        dA = torch.exp(A_exp * dt_t)               # (B, d_inner, d_state)
+        dB = dt_t * B_t                            # (B, d_inner, d_state)
+        h = dA * h + dB * x_t                      # (B, d_inner, d_state)
+        outputs[:, t, :] = (h * C_t.unsqueeze(1)).sum(-1)
+
+    return outputs
+
+
+# ---------------------------------------------------------------------------
 # Building blocks
 # ---------------------------------------------------------------------------
 
@@ -120,24 +161,7 @@ class BiMambaBlock(nn.Module):
         dt = F.softplus(dt_proj(x_conv))
         A = -torch.exp(self.A_log)
 
-        d_inner = x_conv.shape[-1]
-        d_state = B_in.shape[-1]
-        h = torch.zeros(B, d_inner, d_state, device=x.device, dtype=x.dtype)
-        outputs = []
-
-        for t in range(L):
-            dt_t = dt[:, t, :].unsqueeze(-1)
-            B_t = B_in[:, t, :].unsqueeze(1)
-            C_t = C_in[:, t, :]
-            x_t = x_conv[:, t, :].unsqueeze(-1)
-
-            dA = torch.exp(A.unsqueeze(0) * dt_t)
-            dB = dt_t * B_t
-            h = dA * h + dB * x_t
-            y_t = (h * C_t.unsqueeze(1)).sum(-1)
-            outputs.append(y_t)
-
-        y = torch.stack(outputs, dim=1)
+        y = _selective_scan_seq(x_conv, dt, A, B_in, C_in)
         y = y * F.silu(z)
         return out_proj(y)
 
