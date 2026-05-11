@@ -41,7 +41,7 @@ from training.trainer import Trainer
 
 # All architecture variants are exposed by the package; we instantiate one
 # based on the config's ``model_version`` field.
-from models.trace_kin import TraceKinV1, TraceKinV4, TraceKinV5
+from models.trace_kin import TraceKinV1, TraceKinV4, TraceKinV5, TraceKinV5T
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mclassification_task", type=int, default=0)
 
     # Architecture / training behaviour switches
-    parser.add_argument("--model_version", type=str, choices=["v1", "v4", "v5"], default=None,
+    parser.add_argument("--model_version", type=str, choices=["v1", "v4", "v5", "v5t"], default=None,
                         help="Override config 'model_version'. Defaults to whatever the config file specifies.")
     parser.add_argument("--use_swa", action="store_true", default=False,
                         help="Enable SWA (overrides config swa.use_swa).")
@@ -708,7 +708,27 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str,
             classification_head=tasks["classification_task"],
             multiclassification_head=tasks["mclassification_task"],
             device=device,
-            heads=params.get("heads", 5),
+            heads=params.get("heads", 8),
+        )
+    elif version == "v5t":
+        model = TraceKinV5T(
+            mol_deg, prot_deg,
+            prot_evo_channels=params["prot_evo_channels"],
+            d_model=params.get("d_model", 512),
+            n_transformer_layers=params.get("n_transformer_layers", 4),
+            n_self_attn_heads=params.get("n_self_attn_heads", 8),
+            ffn_expand=params.get("ffn_expand", 4),
+            graph_pe_rwse_steps=params.get("graph_pe_rwse_steps", 16),
+            mol_in_channels=params["mol_in_channels"],
+            n_drug_pna_layers=params.get("n_drug_pna_layers", 3),
+            n_cross_heads=params.get("n_cross_heads", 8),
+            chembert_dim=params.get("chembert_dim", 768),
+            dropout=params.get("dropout", 0.1),
+            regression_head=tasks["regression_task"],
+            classification_head=tasks["classification_task"],
+            multiclassification_head=tasks["mclassification_task"],
+            device=device,
+            heads=params.get("heads", 8),
         )
     else:
         raise ValueError(f"Unknown model_version: {version!r}")
