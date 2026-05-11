@@ -103,6 +103,8 @@ def parse_args() -> argparse.Namespace:
                         help="Enable SWA (overrides config swa.use_swa).")
     parser.add_argument("--no_swa", action="store_true", default=False,
                         help="Disable SWA even if the config enables it.")
+    parser.add_argument("--amp", action="store_true", default=False,
+                        help="Enable AMP (bf16 mixed precision) to reduce GPU memory.")
 
     # Preprocessing cache
     parser.add_argument("--force_rebuild", action="store_true", default=False,
@@ -874,6 +876,7 @@ def main():
         use_swa=swa_block["use_swa"],
         swa_start_frac=swa_block.get("swa_start_frac", 0.75),
         swa_lr_factor=swa_block.get("swa_lr_factor", 0.1),
+        use_amp=args.amp,
     )
 
     # 9. Train.

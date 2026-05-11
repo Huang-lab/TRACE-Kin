@@ -20,6 +20,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from torch_geometric.nn import global_add_pool
 from torch_geometric.utils import degree, to_dense_batch
 from torch_geometric.utils import softmax as pyg_softmax
@@ -317,6 +318,7 @@ class TraceKinV5(nn.Module):
         self.multiclassification_head = multiclassification_head
         self.device = device
         self.learnable_aux_loss = False
+        self.gradient_checkpointing = True
 
         # Protein encoder
         self.prot_proj = nn.Linear(prot_evo_channels, d_model)
@@ -393,7 +395,11 @@ class TraceKinV5(nn.Module):
         prot_h_dense, prot_mask = to_dense_batch(prot_h, prot_batch)
 
         for mamba_block, graph_gate in zip(self.mamba_blocks, self.graph_gates):
-            prot_h_dense = mamba_block(prot_h_dense)
+            if self.gradient_checkpointing and self.training:
+                prot_h_dense = grad_checkpoint(
+                    mamba_block, prot_h_dense, use_reentrant=False)
+            else:
+                prot_h_dense = mamba_block(prot_h_dense)
             prot_h_flat = prot_h_dense[prot_mask]
             prot_h_flat = graph_gate(prot_h_flat, residue_edge_index, prot_batch)
             prot_h_dense, _ = to_dense_batch(prot_h_flat, prot_batch)

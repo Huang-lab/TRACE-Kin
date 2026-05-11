@@ -20,7 +20,8 @@ class Trainer(object):
                 classification_weight=1, multiclassification_weight=1, evaluate_metric='rmse',
                 result_path='', runid=0, device='cuda:0', skip_test_during_train=False,
                 finetune_modules=None, patience=0,
-                use_swa=False, swa_start_frac=0.75, swa_lr_factor=0.1):
+                use_swa=False, swa_start_frac=0.75, swa_lr_factor=0.1,
+                use_amp=False):
 
         self.model = model
         self.model.to(device)
@@ -92,6 +93,13 @@ class Trainer(object):
                 f"[SWA] enabled: start_epoch={self._swa_start_epoch}, "
                 f"swa_lr={self.lrate * self.swa_lr_factor:.3e}"
             )
+
+        # --- AMP (automatic mixed precision) for bf16 on H100/A100 -----------
+        self.use_amp = bool(use_amp)
+        self._amp_dtype = torch.bfloat16
+        self._grad_scaler = None
+        if self.use_amp:
+            print(f"[AMP] enabled: dtype={self._amp_dtype}")
 
     def _log_schedule_summary(self):
         """Print and persist the LR schedule parameters once at training start."""
@@ -168,55 +176,56 @@ class Trainer(object):
                     self.optimizer.zero_grad()
 
                     data = data.to(self.device)
-                    reg_pred, cls_pred, mcls_pred, sp_loss, o_loss, cl_loss, _ = self.model(
-                        # Molecule
-                        mol_x=data.mol_x, mol_x_feat=data.mol_x_feat, bond_x=data.mol_edge_attr,
-                        atom_edge_index=data.mol_edge_index, clique_x=data.clique_x, 
-                        clique_edge_index=data.clique_edge_index, atom2clique_index=data.atom2clique_index,
-                        # Protein
-                        residue_x=data.prot_node_aa, residue_evo_x=data.prot_node_evo,
-                        residue_edge_index=data.prot_edge_index,
-                        residue_edge_weight=data.prot_edge_weight,
-                        # Mol-Protein Interaction batch
-                        mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
-                        # v4 ChemBERT/MoLFormer molecular embedding; v1 ignores this kwarg.
-                        chembert_fp=getattr(data, 'chembert_fp', None),
-                        # v4 per-residue amino-acid index (None for v1).
-                        prot_aa_idx=getattr(data, 'prot_aa_idx', None)
-                    )
-                    ## Loss compute
-                    cls_loss = 0
-                    mcls_loss = 0
-                    reg_loss = 0
+                    with torch.amp.autocast('cuda', dtype=self._amp_dtype, enabled=self.use_amp):
+                        reg_pred, cls_pred, mcls_pred, sp_loss, o_loss, cl_loss, _ = self.model(
+                            # Molecule
+                            mol_x=data.mol_x, mol_x_feat=data.mol_x_feat, bond_x=data.mol_edge_attr,
+                            atom_edge_index=data.mol_edge_index, clique_x=data.clique_x, 
+                            clique_edge_index=data.clique_edge_index, atom2clique_index=data.atom2clique_index,
+                            # Protein
+                            residue_x=data.prot_node_aa, residue_evo_x=data.prot_node_evo,
+                            residue_edge_index=data.prot_edge_index,
+                            residue_edge_weight=data.prot_edge_weight,
+                            # Mol-Protein Interaction batch
+                            mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
+                            # v4 ChemBERT/MoLFormer molecular embedding; v1 ignores this kwarg.
+                            chembert_fp=getattr(data, 'chembert_fp', None),
+                            # v4 per-residue amino-acid index (None for v1).
+                            prot_aa_idx=getattr(data, 'prot_aa_idx', None)
+                        )
+                        ## Loss compute
+                        cls_loss = 0
+                        mcls_loss = 0
+                        reg_loss = 0
 
-                    reg_loss_tensor = None
-                    if reg_pred is not None:
-                        reg_pred = reg_pred.squeeze()
-                        reg_y = data.reg_y.squeeze()
-                        reg_loss_tensor = self.regression_loss(reg_pred, reg_y)
-                        if not getattr(self.model, 'learnable_aux_loss', False):
-                            reg_loss = (reg_loss_tensor * self.regression_weight).item()
-                        else:
-                            reg_loss = reg_loss_tensor.item()
+                        reg_loss_tensor = None
+                        if reg_pred is not None:
+                            reg_pred = reg_pred.squeeze()
+                            reg_y = data.reg_y.squeeze()
+                            reg_loss_tensor = self.regression_loss(reg_pred, reg_y)
+                            if not getattr(self.model, 'learnable_aux_loss', False):
+                                reg_loss = (reg_loss_tensor * self.regression_weight).item()
+                            else:
+                                reg_loss = reg_loss_tensor.item()
 
-                    loss_val = self._compose_graph_reg_loss(sp_loss, o_loss, cl_loss, reg_loss_tensor)
+                        loss_val = self._compose_graph_reg_loss(sp_loss, o_loss, cl_loss, reg_loss_tensor)
 
-                    sp_loss = sp_loss.item()
-                    o_loss = o_loss.item()
-                    cl_loss = cl_loss.item()
+                        sp_loss = sp_loss.item()
+                        o_loss = o_loss.item()
+                        cl_loss = cl_loss.item()
 
-                    if cls_pred is not None:
-                        cls_pred = cls_pred.squeeze()
-                        cls_y = data.cls_y.squeeze()
-                        cls_loss = self.classification_loss(cls_pred, cls_y) * self.classification_weight
-                        loss_val += cls_loss
-                        cls_loss = cls_loss.item()
+                        if cls_pred is not None:
+                            cls_pred = cls_pred.squeeze()
+                            cls_y = data.cls_y.squeeze()
+                            cls_loss = self.classification_loss(cls_pred, cls_y) * self.classification_weight
+                            loss_val += cls_loss
+                            cls_loss = cls_loss.item()
 
-                    if mcls_pred is not None:
-                        mcls_y = data.mcls_y
-                        mcls_loss = self.mclassification_loss(mcls_pred, mcls_y) * self.multiclassification_weight
-                        loss_val += mcls_loss
-                        mcls_loss = mcls_loss.item()
+                        if mcls_pred is not None:
+                            mcls_y = data.mcls_y
+                            mcls_loss = self.mclassification_loss(mcls_pred, mcls_y) * self.multiclassification_weight
+                            loss_val += mcls_loss
+                            mcls_loss = mcls_loss.item()
 
                     loss_val.backward()
 
@@ -611,7 +620,7 @@ class Trainer(object):
 
         self.model.eval()
         eval_result = {}
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast('cuda', dtype=self._amp_dtype, enabled=self.use_amp):
             for data in tqdm(data_loader, leave=False, desc='evaluating'):
                 data = data.to(self.device)
                 reg_pred, cls_pred, mcls_pred, sp_loss, o_loss, cl_loss, _ = self.model(
