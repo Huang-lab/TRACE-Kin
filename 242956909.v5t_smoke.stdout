@@ -1,0 +1,387 @@
+Sender: LSF System <lsfadmin@lg02e15>
+Subject: Job 242956909: <trace_kin_v5t_smoke> in cluster <chimera> Done
+
+Job <trace_kin_v5t_smoke> was submitted from host <li04e04> by user <wangc40> in cluster <chimera> at Mon May 11 15:20:56 2026
+Job was executed on host(s) <8*lg02e15>, in queue <gpu>, as user <wangc40> in cluster <chimera> at Mon May 11 15:21:00 2026
+</hpc/users/wangc40> was used as the home directory.
+</sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE-Kin> was used as the working directory.
+Started at Mon May 11 15:21:00 2026
+Terminated at Mon May 11 15:23:13 2026
+Results reported at Mon May 11 15:23:13 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J trace_kin_v5t_smoke
+#BSUB -P acc_DiseaseGeneCell
+#BSUB -q gpu
+#BSUB -R h100nvl
+#BSUB -gpu num=1
+#BSUB -n 8
+#BSUB -R "rusage[mem=15000]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 01:00
+#BSUB -o %J.v5t_smoke.stdout
+#BSUB -eo %J.v5t_smoke.stderr
+#BSUB -L /bin/bash
+
+# =============================================================================
+# TRACE-Kin v5t (Vanilla Transformer + Cross-Attention) smoke test
+# =============================================================================
+# Submit with:
+#     bsub < training/run_v5t_smoke_test.lsf
+#
+# Purpose: validate the v5t Transformer architecture end-to-end on one cell
+# before committing the 10-cell x 3-seed array. Checks:
+#   - MutaPLM per-residue embedding loaded from parquet (L, 4096)
+#   - Linear projection 4096 -> 512
+#   - Graph structural encoding (RWSE from contact-map)
+#   - Transformer self-attention with Rotary PE (RoPE)
+#   - Cross-attention between residues and ligand atoms
+#   - Substrate-conditioned pooling
+#   - MoLFormer-XL context injection to ligand atoms
+#   - Final regression head + test prediction CSV
+#
+# Runs train_trace_kin.py with a tiny sample (100 rows, 5 epochs) on
+# the EITLEM kkm cold_drug MUTAPLM cell.
+#
+# After success, chain the per-folder arrays:
+#     bsub -w "done(<SMOKE_JOB_ID>)" < training/run_v5t_perfolder_s1.lsf
+#     bsub < training/run_v5t_perfolder_s2.lsf
+#     bsub < training/run_v5t_perfolder_s3.lsf
+# =============================================================================
+
+# --- Environment -------------------------------------------------------------
+ml purge
+source ~/.bashrc
+module load anaconda3/2024.06
+source activate test
+module load cuda/12.4.0
+export RAYON_NUM_THREADS=4
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+
+
+(... more ...)
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   84.00 sec.
+    Max Memory :                                 24253 MB
+    Average Memory :                             8661.99 MB
+    Total Requested Memory :                     120000.00 MB
+    Delta Memory :                               95747.00 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                15
+    Run time :                                   132 sec.
+    Turnaround time :                            137 sec.
+
+The output (if any) follows:
+
+==========================================
+TRACE-Kin v5t (Transformer) Smoke Test
+==========================================
+Date:               Mon May 11 15:21:04 EDT 2026
+Dataset:            /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_MUTAPLM_embedding_cold_drug
+Result dir:         /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v5t_transformer/_smoke
+Config:             training/config_v5t.json
+MoLFormer:          /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/transformersmodels/ibm/MoLFormer-XL-both-10pct
+Sample size:        100 rows train / 50 test
+Epochs:             5
+Architecture:       Transformer x4 (RoPE) + cross-attention + MoLFormer ctx
+==========================================
+Python 3.12.2
+Python: /sc/arion/work/wangc40/test-env/envs/test/bin/python
+CUDA device: NVIDIA H100 80GB HBM3, sm_90
+============================================================
+TRACE-Kin training
+============================================================
+Datafolder:        /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_MUTAPLM_embedding_cold_drug
+Result path:       /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v5t_transformer/_smoke
+Config:            training/config_v5t.json
+Pool train CSVs:   (none)
+============================================================
+[mem] before load_split_dataframes             max RSS = 0.59 GB
+Loading primary train (essential cols): /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_MUTAPLM_embedding_cold_drug/train.parquet
+Loading primary test (essential cols): /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_MUTAPLM_embedding_cold_drug/test.parquet
+Loading primary val (essential cols): /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_MUTAPLM_embedding_cold_drug/val.parquet
+Detected prot_evo_channels = 4096 (1-row sample)
+[mem] after load_split_dataframes (lite — feature cols not loaded) max RSS = 0.78 GB
+model_version: v5t, use_swa: False
+Reusing protein cache: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_MUTAPLM_embedding_cold_drug/protein.pt
+Reusing ligand cache: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/EITLEM_dataset/EITLEM_kkm_MUTAPLM_embedding_cold_drug/ligand.pt
+[mem] after preprocess                         max RSS = 22.97 GB
+loaders ready: train=13 test=7 val=185
+[mem] after make_loaders                       max RSS = 22.97 GB
+Built TraceKinV5T with 55,451,140 parameters
+[LR schedule] schedule_lr=True, lrate=0.0003, min_lrate=1e-06, warmup_iters=0, lr_decay_iters=65, total_iters=65
+Not in terminal, reprint now using normal build-in print function.
+                              
+                              
+----------------------------------------
+Epoch 001 with LR 0.000276: Model Results
+----------------------------------------
+Train MSE Loss: 16.9779, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.5431,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.5857,
+    "mse": 4.0982,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1406,
+    "regression_loss": 4.0841,
+    "rm2": 0.0195,
+    "rmse": 2.0244,
+    "sd": 1.798,
+    "spearman": 0.1297,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.5322,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.4428,
+    "mse": 3.0911,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1071,
+    "regression_loss": 3.1266,
+    "rm2": 0.0114,
+    "rmse": 1.7582,
+    "sd": 1.5386,
+    "spearman": 0.0959,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 002 with LR 0.000204: Model Results
+----------------------------------------
+Train MSE Loss: 4.6100, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.5393,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.4814,
+    "mse": 3.4881,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1403,
+    "regression_loss": 3.4806,
+    "rm2": 0.0195,
+    "rmse": 1.8677,
+    "sd": 1.7981,
+    "spearman": 0.1176,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.5657,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3081,
+    "mse": 2.4534,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1815,
+    "regression_loss": 2.3863,
+    "rm2": 0.0324,
+    "rmse": 1.5663,
+    "sd": 1.5218,
+    "spearman": 0.1867,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 003 with LR 0.000111: Model Results
+----------------------------------------
+Train MSE Loss: 4.0764, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.5372,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.6019,
+    "mse": 4.1524,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1255,
+    "regression_loss": 4.1379,
+    "rm2": 0.0157,
+    "rmse": 2.0377,
+    "sd": 1.8017,
+    "spearman": 0.1119,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.5657,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3081,
+    "mse": 2.4534,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1815,
+    "regression_loss": 2.3863,
+    "rm2": 0.0324,
+    "rmse": 1.5663,
+    "sd": 1.5218,
+    "spearman": 0.1867,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 004 with LR 0.000034: Model Results
+----------------------------------------
+Train MSE Loss: 3.8566, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.5418,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.5054,
+    "mse": 3.6028,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1261,
+    "regression_loss": 3.5969,
+    "rm2": 0.0157,
+    "rmse": 1.8981,
+    "sd": 1.8016,
+    "spearman": 0.1241,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.5657,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3081,
+    "mse": 2.4534,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1815,
+    "regression_loss": 2.3863,
+    "rm2": 0.0324,
+    "rmse": 1.5663,
+    "sd": 1.5218,
+    "spearman": 0.1867,
+    "spectral_loss": 0.0
+}
+                              
+                              
+----------------------------------------
+Epoch 005 with LR 0.000001: Model Results
+----------------------------------------
+Train MSE Loss: 1.8852, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.5416,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.4711,
+    "mse": 3.4517,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.122,
+    "regression_loss": 3.4534,
+    "rm2": 0.0145,
+    "rmse": 1.8579,
+    "sd": 1.8025,
+    "spearman": 0.123,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.5616,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3374,
+    "mse": 2.4158,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1296,
+    "regression_loss": 2.2665,
+    "rm2": 0.0164,
+    "rmse": 1.5543,
+    "sd": 1.5344,
+    "spearman": 0.1778,
+    "spectral_loss": 0.0
+}
+[best epoch] epoch=5, best_rmse=1.8579, lr_at_best=1.175e-06
+                              
+                              
+----------------------------------------
+Epoch 005 with LR 0.000001: Model Results
+----------------------------------------
+Train MSE Loss: 1.8852, Train CLS Loss: 0.0000, Train MCLS Loss: 0.0000
+Protein Cluster Region Loss - Ortho Loss: 0.0000, Cluster Loss: 0.0000
+                              
+Validation Results: {
+    "ci": 0.5416,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.4711,
+    "mse": 3.4517,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.122,
+    "regression_loss": 3.4534,
+    "rm2": 0.0145,
+    "rmse": 1.8579,
+    "sd": 1.8025,
+    "spearman": 0.123,
+    "spectral_loss": 0.0
+}
+                              
+Test Results: {
+    "ci": 0.5616,
+    "classification_loss": 0.0,
+    "cluster_loss": 0.0,
+    "mae": 1.3374,
+    "mse": 2.4158,
+    "multiclassification_loss": 0.0,
+    "ortho_loss": 0.0,
+    "pearson": 0.1296,
+    "regression_loss": 2.2665,
+    "rm2": 0.0164,
+    "rmse": 1.5543,
+    "sd": 1.5344,
+    "spearman": 0.1778,
+    "spectral_loss": 0.0
+}
+Final test metrics: rmse=1.5543, pearson=0.1296, r2_proxy(mse)=2.4158
+Done. Predictions: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v5t_transformer/_smoke/test_prediction_seed1.csv; checkpoint: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v5t_transformer/_smoke/save_model_seed1/model.pt
+
+==========================================
+SMOKE TEST: PASS
+Result file: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v5t_transformer/_smoke/test_prediction_seed1.csv
+Next: bsub -w "done(242956909)" < training/run_v5t_perfolder_s1.lsf
+      bsub < training/run_v5t_perfolder_s2.lsf
+      bsub < training/run_v5t_perfolder_s3.lsf
+==========================================
+
+
+PS:
+
+Read file <242956909.v5t_smoke.stderr> for stderr output of this job.
+
