@@ -162,11 +162,39 @@ def find_data_file(folder: str, base_name: str) -> str | None:
     return None
 
 
-def load_dataframe(path: str) -> pd.DataFrame:
+def load_dataframe(path: str, columns: list[str] | None = None) -> pd.DataFrame:
+    """Load parquet or CSV. ``columns=`` pushes the column projection down
+    to the reader so heavy columns (e.g. per-residue MutaPLM at 4096-d)
+    are never materialized when not needed."""
     ext = Path(path).suffix.lower()
     if ext == ".parquet":
-        return pd.read_parquet(path)
-    return pd.read_csv(path)
+        return pd.read_parquet(path, columns=columns)
+    if ext == ".tsv":
+        return pd.read_csv(path, sep="\t", usecols=columns)
+    return pd.read_csv(path, usecols=columns)
+
+
+def detect_dim_from_parquet(path: str, col: str) -> int:
+    """Read just one row from `path` to learn the trailing dim of `col`.
+
+    Uses pyarrow iter_batches with batch_size=1 so we don't accidentally
+    materialize a full row group. For a list[float] / list[list[float]]
+    column at MutaPLM's 4096-d, a single full-row read is ~1.6 MB; a
+    full-row-group read could be GBs.
+    """
+    import pyarrow.parquet as pq
+    if not path.endswith(".parquet"):
+        # CSV/TSV fallback: read a small head with the column subset
+        df_head = load_dataframe(path, columns=[col]).head(1)
+        return detect_embedding_dim(df_head, col)
+    pf = pq.ParquetFile(path)
+    batch = next(pf.iter_batches(batch_size=1, columns=[col]))
+    rows = batch.to_pylist()
+    if not rows:
+        raise ValueError(f"Parquet {path} is empty; cannot detect dim of {col!r}.")
+    raw = rows[0][col]
+    arr = coerce_features_to_numpy(raw)
+    return int(arr.shape[-1] if arr.ndim >= 1 else arr.size)
 
 
 def coerce_features_to_numpy(raw):
@@ -201,19 +229,28 @@ def detect_embedding_dim(df: pd.DataFrame, feature_col: str) -> int:
 
 
 def build_seq2feat(*dfs: pd.DataFrame, protein_col: str, feature_col: str) -> dict:
-    """Map sequence -> numpy embedding from one or more DataFrames."""
+    """Map sequence -> numpy float16 embedding from one or more DataFrames.
+
+    Stored as float16 because protein_init_with_embedding converts to
+    torch then ``.half()`` immediately. Halving here (instead of after a
+    detour through float32) saves 21 GB at MutaPLM's 4096-d × 6607
+    unique sequences scale. Skips duplicates so the dict only grows up
+    to the unique-sequence count.
+    """
     seq2feat: dict = {}
     for df in dfs:
         if df is None:
             continue
         for seq, raw in zip(df[protein_col], df[feature_col]):
+            if seq in seq2feat:
+                continue  # dedupe — saves time and memory on multi-row repeats
             if raw is None:
                 continue
             if isinstance(raw, (list, tuple, np.ndarray)) and len(raw) == 0:
                 continue
             if not isinstance(raw, (list, tuple, np.ndarray)) and pd.isna(raw):
                 continue
-            seq2feat[seq] = coerce_features_to_numpy(raw)
+            seq2feat[seq] = coerce_features_to_numpy(raw).astype(np.float16)
     return seq2feat
 
 
@@ -291,8 +328,21 @@ def normalize_columns(df: pd.DataFrame, protein_col: str, ligand_col: str, label
 
 
 def load_split_dataframes(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None,
-                                          list[str], list[str], dict, dict, int, int]:
-    """Load primary train/test/val once, build seq2feat + smi2chembert, return everything the rest of main() needs."""
+                                          list[str], list[str],
+                                          int, int, dict]:
+    """Load primary train/test/val with ESSENTIAL columns only.
+
+    The big columns (``protein_features`` at 4096-d MutaPLM, plus
+    ``metabolite_features`` at 768-d) are NOT loaded here — they are
+    constructed lazily inside :func:`preprocess` only when the
+    corresponding cache (protein.pt / ligand.pt) misses. This avoids
+    holding tens-of-GB of feature arrays in CPU RAM through the whole
+    training run when the caches already exist.
+
+    Returns the lite DataFrames + protein/ligand lists + detected dims +
+    a ``paths`` dict so :func:`preprocess` can re-read the parquets with
+    the heavy columns when (and only when) it needs them.
+    """
     train_path = find_data_file(args.datafolder, "train")
     test_path = find_data_file(args.datafolder, "test")
     val_path = find_data_file(args.datafolder, "val")
@@ -302,157 +352,184 @@ def load_split_dataframes(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
             f"Missing train/test in {args.datafolder} (looked for .parquet/.csv/.tsv)."
         )
 
-    print(f"Loading primary train: {train_path}")
-    train_df = load_dataframe(train_path)
+    # Cross-dataset pool paths (per-folder runs leave this empty).
+    pool_paths = [p.strip() for p in args.pool_train_csvs.split(",") if p.strip()]
+    pool_train_paths = []
+    for folder in pool_paths:
+        extra_train_path = find_data_file(folder, "train")
+        if extra_train_path is None:
+            print(f"WARN: pool entry {folder} has no train file, skipping.")
+            continue
+        pool_train_paths.append(extra_train_path)
+
+    # --- Lite load: essential columns only -----------------------------------
+    essential = [args.protein_col, args.ligand_col, args.label_col]
+
+    print(f"Loading primary train (essential cols): {train_path}")
+    train_df = load_dataframe(train_path, columns=essential)
     if args.sample_train:
         train_df = train_df.sample(args.sample_train, random_state=args.seed)
     train_df = train_df.reset_index(drop=True)
 
-    print(f"Loading primary test: {test_path}")
-    test_df = load_dataframe(test_path)
+    print(f"Loading primary test (essential cols): {test_path}")
+    test_df = load_dataframe(test_path, columns=essential)
     if args.sample_test:
         test_df = test_df.sample(args.sample_test, random_state=args.seed)
     test_df = test_df.reset_index(drop=True)
 
     val_df = None
     if val_path is not None:
-        print(f"Loading primary val: {val_path}")
-        val_df = load_dataframe(val_path)
+        print(f"Loading primary val (essential cols): {val_path}")
+        val_df = load_dataframe(val_path, columns=essential)
         if args.sample_valid:
             val_df = val_df.sample(args.sample_valid, random_state=args.seed)
         val_df = val_df.reset_index(drop=True)
 
-    # Cross-dataset pooling: append additional training rows from other dataset folders.
-    pool_paths = [p.strip() for p in args.pool_train_csvs.split(",") if p.strip()]
     pooled_dfs: list[pd.DataFrame] = []
-    for folder in pool_paths:
-        extra_train_path = find_data_file(folder, "train")
-        if extra_train_path is None:
-            print(f"WARN: pool entry {folder} has no train file, skipping.")
-            continue
-        print(f"Pooling additional train from: {extra_train_path}")
-        pooled_dfs.append(load_dataframe(extra_train_path))
+    for p in pool_train_paths:
+        print(f"Pooling additional train (essential cols): {p}")
+        pooled_dfs.append(load_dataframe(p, columns=essential))
     if pooled_dfs:
         before = len(train_df)
         train_df = pd.concat([train_df] + pooled_dfs, ignore_index=True)
-        print(f"Pooled training set: {before} -> {len(train_df)} rows from {len(pool_paths)} extra dataset(s).")
+        print(f"Pooled training set: {before} -> {len(train_df)} rows from {len(pool_train_paths)} extra dataset(s).")
 
-    # Detect embedding dim from the (possibly pooled) train df. All inputs must
-    # share a single embedding dim; mixing 1280-dim ESM with 1024-dim ProteinCLIP
-    # is a user error, not a fall-through.
-    embedding_dim = detect_embedding_dim(train_df, args.feature_col)
-    print(f"Detected prot_evo_channels = {embedding_dim}")
-
-    seq2feat = build_seq2feat(train_df, test_df, val_df,
-                              protein_col=args.protein_col, feature_col=args.feature_col)
-    print(f"seq2feat: {len(seq2feat)} unique sequences.")
-
-    # Drop the protein_features column from all DataFrames now that we've
-    # consolidated into seq2feat. At MutaPLM's 4096-d this column carries
-    # 30k+ rows × 400 res × 4096 × 4 bytes ≈ many GB even with pandas
-    # reference-sharing; freeing it cuts a meaningful chunk of CPU RAM.
-    for _df in (train_df, test_df, val_df):
-        if _df is not None and args.feature_col in _df.columns:
-            _df.drop(columns=[args.feature_col], inplace=True)
-
-    # Molecular embeddings (768-d) for v3's chembert_proj. Two sources:
-    #
-    #  1. --molformer_path set: live MoLFormer-XL inference. Cached
-    #     per-cell at <datafolder>/molformer_emb.pt so multiple seeds
-    #     reuse the same compute.
-    #  2. --molformer_path empty: read pre-computed `metabolite_features`
-    #     column from the parquet files (legacy ChemBERT path).
-    #
-    # Either way the downstream model sees a (768,) vector per SMILES via
-    # the chembert_fp slot.
-    standard_smi_set = sorted({
-        *train_df[args.ligand_col],
-        *test_df[args.ligand_col],
-        *(val_df[args.ligand_col] if val_df is not None else []),
-    })
+    # --- Dim detection from 1-row samples ------------------------------------
+    embedding_dim = detect_dim_from_parquet(train_path, args.feature_col)
+    print(f"Detected prot_evo_channels = {embedding_dim} (1-row sample)")
     if args.molformer_path:
-        molformer_cache = os.path.join(args.datafolder, "molformer_emb.pt")
-        smi2chembert = compute_molformer_embeddings(
-            standard_smi_set,
-            model_path=args.molformer_path,
-            cache_path=molformer_cache,
-            force_rebuild=args.force_rebuild,
-            device=args.device,
-        )
-        # All MoLFormer-XL embeddings are 768-d; sample one to confirm.
-        sample = next(iter(smi2chembert.values()))
-        chembert_dim = int(sample.shape[-1])
-        print(f"MoLFormer embeddings: {len(smi2chembert)} unique SMILES, dim={chembert_dim}")
+        chembert_dim = 768  # MoLFormer-XL hidden size; doesn't need parquet read
     else:
-        chembert_dim = detect_chembert_dim(train_df, args.metabolite_feature_col)
-        print(f"Detected chembert_dim from {args.metabolite_feature_col} = {chembert_dim}")
-        smi2chembert = build_smi2chembert(train_df, test_df, val_df,
-                                          ligand_col=args.ligand_col,
-                                          feature_col=args.metabolite_feature_col)
-        print(f"smi2chembert (from parquet): {len(smi2chembert)} unique SMILES.")
+        chembert_dim = detect_dim_from_parquet(train_path, args.metabolite_feature_col)
+        print(f"Detected chembert_dim = {chembert_dim} (1-row sample, {args.metabolite_feature_col})")
 
-    # Drop metabolite_features column too (now consolidated into smi2chembert).
-    # Whether we used MoLFormer or parquet, the column is no longer read.
-    for _df in (train_df, test_df, val_df):
-        if _df is not None and args.metabolite_feature_col in _df.columns:
-            _df.drop(columns=[args.metabolite_feature_col], inplace=True)
-
-    # Standardize column names for downstream code.
+    # --- Standardize columns + collect unique pairs --------------------------
     train_df = normalize_columns(train_df, args.protein_col, args.ligand_col, args.label_col)
     test_df = normalize_columns(test_df, args.protein_col, args.ligand_col, args.label_col)
     if val_df is not None:
         val_df = normalize_columns(val_df, args.protein_col, args.ligand_col, args.label_col)
 
-    # Collect the unique pairs that need preprocessing. Every sequence used in
-    # any split must have an entry in seq2feat (otherwise embedding lookup
-    # fails downstream).
     proteins = sorted({*train_df["Protein"], *test_df["Protein"]})
     ligands = sorted({*train_df["Ligand"], *test_df["Ligand"]})
     if val_df is not None:
         proteins = sorted(set(proteins).union(val_df["Protein"]))
         ligands = sorted(set(ligands).union(val_df["Ligand"]))
 
-    missing = [s for s in proteins if s not in seq2feat]
-    if missing:
-        raise ValueError(
-            f"{len(missing)} sequences are missing protein_features (e.g. {missing[:3]!r})."
-        )
+    paths = {
+        "train": train_path,
+        "test": test_path,
+        "val": val_path,
+        "pool_train": pool_train_paths,
+    }
+    return train_df, test_df, val_df, proteins, ligands, embedding_dim, chembert_dim, paths
 
-    missing_smi = [s for s in ligands if s not in smi2chembert]
-    if missing_smi:
-        raise ValueError(
-            f"{len(missing_smi)} SMILES are missing metabolite_features "
-            f"(e.g. {missing_smi[:3]!r})."
-        )
 
-    return (train_df, test_df, val_df, proteins, ligands,
-            seq2feat, smi2chembert, embedding_dim, chembert_dim)
+def _build_seq2feat_lazy(args, paths) -> dict:
+    """Re-read parquets with just (protein_col, feature_col) and build seq2feat.
+
+    Called only by :func:`preprocess` on protein.pt cache miss. Held in
+    memory just long enough to construct protein_dict, then dropped.
+    """
+    cols = [args.protein_col, args.feature_col]
+    print(f"  reloading {args.feature_col} for seq2feat construction (transient)...")
+    train_df = load_dataframe(paths["train"], columns=cols)
+    if args.sample_train:
+        train_df = train_df.sample(args.sample_train, random_state=args.seed)
+    test_df = load_dataframe(paths["test"], columns=cols)
+    if args.sample_test:
+        test_df = test_df.sample(args.sample_test, random_state=args.seed)
+    val_df = None
+    if paths["val"] is not None:
+        val_df = load_dataframe(paths["val"], columns=cols)
+        if args.sample_valid:
+            val_df = val_df.sample(args.sample_valid, random_state=args.seed)
+    pooled = []
+    for p in paths.get("pool_train", []):
+        pooled.append(load_dataframe(p, columns=cols))
+    if pooled:
+        train_df = pd.concat([train_df] + pooled, ignore_index=True)
+    return build_seq2feat(train_df, test_df, val_df,
+                          protein_col=args.protein_col, feature_col=args.feature_col)
+
+
+def _build_smi2chembert_lazy(args, paths, ligands) -> dict:
+    """Compute MoLFormer or read metabolite_features parquet column for smi2chembert.
+
+    Called only by :func:`preprocess` when ligand.pt cache misses or
+    needs chembert_fp backfill.
+    """
+    if args.molformer_path:
+        molformer_cache = os.path.join(args.datafolder, "molformer_emb.pt")
+        return compute_molformer_embeddings(
+            ligands,
+            model_path=args.molformer_path,
+            cache_path=molformer_cache,
+            force_rebuild=args.force_rebuild,
+            device=args.device,
+        )
+    cols = [args.ligand_col, args.metabolite_feature_col]
+    print(f"  reloading {args.metabolite_feature_col} for smi2chembert construction (transient)...")
+    train_df = load_dataframe(paths["train"], columns=cols)
+    if args.sample_train:
+        train_df = train_df.sample(args.sample_train, random_state=args.seed)
+    test_df = load_dataframe(paths["test"], columns=cols)
+    if args.sample_test:
+        test_df = test_df.sample(args.sample_test, random_state=args.seed)
+    val_df = None
+    if paths["val"] is not None:
+        val_df = load_dataframe(paths["val"], columns=cols)
+        if args.sample_valid:
+            val_df = val_df.sample(args.sample_valid, random_state=args.seed)
+    return build_smi2chembert(train_df, test_df, val_df,
+                              ligand_col=args.ligand_col,
+                              feature_col=args.metabolite_feature_col)
 
 
 # ---------------------------------------------------------------------------
 # Preprocessing cache (protein.pt / ligand.pt)
 # ---------------------------------------------------------------------------
-def preprocess(folder: str, proteins: list[str], ligands: list[str],
-               seq2feat: dict, smi2chembert: dict,
-               force_rebuild: bool,
+def preprocess(args, paths: dict, proteins: list[str], ligands: list[str],
                model_version: str = "v3") -> tuple[dict, dict, dict | None]:
+    """Build/load protein.pt, ligand.pt, and (v4) aa_typical caches.
+
+    seq2feat (~21 GB at MutaPLM 4096-d × 6607 unique seqs) is built
+    LAZILY — only when ``protein.pt`` cache misses or ``force_rebuild``
+    is set. After ``protein_dict`` is constructed we drop seq2feat
+    immediately so it doesn't sit in RAM through training. Same pattern
+    for smi2chembert (loaded on ligand.pt cache miss only).
+
+    With cache hits (typical for seeds 2/3 after seed 1 builds), peak
+    extra CPU RAM = just protein.pt size (~21 GB at MutaPLM). With cache
+    miss, peak ≈ 2× protein.pt size briefly during the protein_init
+    build (~42 GB), then drops to ~21 GB after seq2feat is freed.
+    """
+    folder = args.datafolder
+    force_rebuild = args.force_rebuild
     protein_path = os.path.join(folder, "protein.pt")
     ligand_path = os.path.join(folder, "ligand.pt")
 
+    # === Protein cache ===
     if os.path.exists(protein_path) and not force_rebuild:
         print(f"Reusing protein cache: {protein_path}")
         protein_dict = torch.load(protein_path)
     else:
-        print("Building protein graphs from scratch (this can be slow)...")
+        print("Cache miss — loading seq2feat (transient) to build protein.pt...")
+        seq2feat = _build_seq2feat_lazy(args, paths)
+        print(f"  seq2feat: {len(seq2feat)} unique sequences (transient)")
+        # Validate before consuming.
+        missing = [s for s in proteins if s not in seq2feat]
+        if missing:
+            raise ValueError(
+                f"{len(missing)} sequences are missing protein_features "
+                f"(e.g. {missing[:3]!r}). Check the parquet's {args.feature_col} column."
+            )
         protein_dict = protein_init_with_embedding(proteins, seq2feat=seq2feat)
         torch.save(protein_dict, protein_path)
+        del seq2feat
+        import gc; gc.collect()
+        print(f"Saved protein cache: {protein_path}; freed seq2feat.")
 
-    # v4: compute aa_typical once across the whole protein corpus, build
-    # compact (n_aa+1, D) lookup tensors plus per-residue index (L,) per
-    # protein. The lookup tensors are small (≈700 KB) and live as model
-    # buffers; the per-residue index is L bytes per protein. This avoids
-    # the prior (L, D) per-protein duplication that consumed ~85 GB RAM
-    # when D=4096 (MutaPLM).
+    # === aa_typical (v4 only) ===
     aa_typical_buffers = None
     if model_version == "v4":
         aa_typical_path = os.path.join(folder, "aa_typical.pt")
@@ -469,21 +546,22 @@ def preprocess(folder: str, proteins: list[str], ligands: list[str],
             "aa_means": aa_means,
             "aa_stds": aa_stds,
         }
-        # Attach per-residue index (L,) per protein — int64, ~L bytes per
-        # protein. PyG batches this along dim=0 alongside prot_node_evo.
+        # Attach per-residue AA-index (L,) per protein — int64, ~L bytes per
+        # protein. PyG batches along dim=0 alongside prot_node_evo.
         for seq, prot in protein_dict.items():
             prot["prot_aa_idx"] = seq_to_aa_idx(prot["seq"], aa_to_idx)
 
+    # === Ligand cache ===
     if os.path.exists(ligand_path) and not force_rebuild:
         print(f"Reusing ligand cache: {ligand_path}")
         ligand_dict = torch.load(ligand_path)
-        # The cache may predate the ChemBERT cutover. v3 needs chembert_fp on
-        # every ligand; backfill in-memory from smi2chembert (no disk write —
-        # next --force_rebuild will replace the on-disk cache cleanly).
-        missing = [s for s in ligand_dict if 'chembert_fp' not in ligand_dict[s]]
-        if missing:
-            print(f"Backfilling chembert_fp on {len(missing)} cached ligands...")
-            for s in missing:
+        # Backfill chembert_fp if a legacy cache predates the ChemBERT cutover.
+        missing_chembert = [s for s in ligand_dict if 'chembert_fp' not in ligand_dict[s]]
+        if missing_chembert:
+            print(f"Backfilling chembert_fp on {len(missing_chembert)} cached ligands "
+                  f"(loading smi2chembert transiently)...")
+            smi2chembert = _build_smi2chembert_lazy(args, paths, ligands)
+            for s in missing_chembert:
                 if s not in smi2chembert:
                     raise KeyError(
                         f"chembert_fp missing in cache and in smi2chembert "
@@ -491,10 +569,26 @@ def preprocess(folder: str, proteins: list[str], ligands: list[str],
                     )
                 vec = np.asarray(smi2chembert[s], dtype=np.float32).reshape(-1)
                 ligand_dict[s]['chembert_fp'] = torch.from_numpy(vec).unsqueeze(0)
+            del smi2chembert
+            # Persist the backfilled cache so subsequent runs don't repeat
+            # the smi2chembert load + backfill loop.
+            torch.save(ligand_dict, ligand_path)
+            print(f"  persisted backfilled ligand cache: {ligand_path}")
     else:
-        print("Building ligand graphs from scratch...")
+        print("Cache miss — loading smi2chembert (transient) to build ligand.pt...")
+        smi2chembert = _build_smi2chembert_lazy(args, paths, ligands)
+        # Validate before consuming.
+        missing_smi = [s for s in ligands if s not in smi2chembert]
+        if missing_smi:
+            raise ValueError(
+                f"{len(missing_smi)} SMILES are missing molecular embeddings "
+                f"(e.g. {missing_smi[:3]!r})."
+            )
         ligand_dict = ligand_init(ligands, smi2chembert=smi2chembert)
         torch.save(ligand_dict, ligand_path)
+        del smi2chembert
+        import gc; gc.collect()
+        print(f"Saved ligand cache: {ligand_path}; freed smi2chembert.")
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -636,10 +730,11 @@ def main():
     print("=" * 60)
 
     print_mem("before load_split_dataframes")
-    # 1. Load splits + build seq2feat / smi2chembert (single-pass loading).
+    # 1. Lite parquet load (essential cols only) + dim detection.
+    #    seq2feat / smi2chembert are deferred to preprocess (lazy on cache miss).
     (train_df, test_df, val_df, proteins, ligands,
-     seq2feat, smi2chembert, embedding_dim, chembert_dim) = load_split_dataframes(args)
-    print_mem("after load_split_dataframes")
+     embedding_dim, chembert_dim, paths) = load_split_dataframes(args)
+    print_mem("after load_split_dataframes (lite — feature cols not loaded)")
 
     # 2. Load and update model config.
     with open(args.config_path) as f:
@@ -661,21 +756,16 @@ def main():
 
     print(f"model_version: {model_config['model_version']}, use_swa: {swa_block['use_swa']}")
 
-    # 3. Preprocess proteins/ligands (with cache). model_version controls
-    #    whether v4-specific aa_typical (compact lookup buffers + per-residue
-    #    index) is computed. aa_typical_buffers is None for v1/v3.
+    # 3. Preprocess proteins/ligands (with cache). On cache hit (typical
+    #    for seeds 2/3 after seed 1 builds), seq2feat/smi2chembert are
+    #    NEVER loaded. On cache miss they're built transiently inside
+    #    preprocess and freed immediately after the .pt is saved.
+    #    model_version controls whether v4-specific aa_typical is computed.
     protein_dict, ligand_dict, aa_typical_buffers = preprocess(
-        args.datafolder, proteins, ligands, seq2feat, smi2chembert,
-        args.force_rebuild, model_version=model_config["model_version"],
+        args, paths, proteins, ligands,
+        model_version=model_config["model_version"],
     )
     print_mem("after preprocess")
-    # seq2feat (~21 GB at MutaPLM 4096-d × 6607 unique seqs) is fully
-    # consumed by protein_init_with_embedding once protein_dict is built.
-    # Free it so it doesn't sit in RAM through training. smi2chembert is
-    # smaller (~20 MB) but free for symmetry.
-    del seq2feat, smi2chembert
-    import gc; gc.collect()
-    print_mem("after free seq2feat/smi2chembert")
 
     # 4. Build DataLoaders (with row filtering).
     train_loader, test_loader, val_loader, train_df, test_df, val_df = make_loaders(
