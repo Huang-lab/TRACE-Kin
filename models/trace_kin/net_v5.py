@@ -439,7 +439,20 @@ class TraceKinV5(nn.Module):
         if self.multiclassification_head:
             mcls_pred = self.mcls_out(feat)
 
+        # Unpack flat residue/atom scores for store_result compatibility.
+        # prot_w is (B, L_max) dense; flatten to (N_res,) via mask.
+        prot_w_flat = prot_w[prot_mask]
+        lig_w_flat = lig_w[atom_mask]
+
         attention_dict = {
+            # v1-compat keys expected by data_utils.store_result
+            'residue_final_score': prot_w_flat,
+            'atom_final_score': lig_w_flat,
+            'residue_layer_scores': prot_w_flat,
+            'clique_layer_scores': lig_w_flat,
+            'drug_clique_index': mol_batch,
+            'cluster_s': {},
+            # v5-specific
             'prot_cross_attn_weights': prot_attn,
             'lig_cross_attn_weights': lig_attn,
             'prot_pool_weights': prot_w,
