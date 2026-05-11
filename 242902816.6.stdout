@@ -1,0 +1,138 @@
+Sender: LSF System <lsfadmin@lg02e08>
+Subject: Job 242902816[6]: <trace_kin_v4_perfolder_s1[1-10]> in cluster <chimera> Exited
+
+Job <trace_kin_v4_perfolder_s1[1-10]> was submitted from host <li04e01> by user <wangc40> in cluster <chimera> at Sun May 10 21:53:36 2026
+Job was executed on host(s) <16*lg02e08>, in queue <gpu>, as user <wangc40> in cluster <chimera> at Sun May 10 22:04:53 2026
+</hpc/users/wangc40> was used as the home directory.
+</sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE-Kin> was used as the working directory.
+Started at Sun May 10 22:04:53 2026
+Terminated at Sun May 10 22:11:41 2026
+Results reported at Sun May 10 22:11:41 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J trace_kin_v4_perfolder_s1[1-10]
+#BSUB -P acc_DiseaseGeneCell
+#BSUB -q gpu
+#BSUB -R h100nvl
+#BSUB -gpu num=1
+#BSUB -n 16
+#BSUB -R "rusage[mem=8000]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 48:00
+#BSUB -o %J.%I.stdout
+#BSUB -eo %J.%I.stderr
+#BSUB -L /bin/bash
+
+# =============================================================================
+# TRACE-Kin v4 (MAP-GNN) PER-FOLDER + MutaPLM — top-10 RF-gap cells
+# =============================================================================
+# Submit with:
+#     bsub < training/run_v4_perfolder_s1.lsf
+#
+# v4 = MAP-GNN: v1 GNN backbone + per-residue novelty score + pocket
+# attention pool + MoLFormer-XL molecular context residual (preserved
+# from v3). Unlike earlier versions, every cell uses MutaPLM as the
+# protein embedding (the entire mutation-aware story rests on
+# MutaPLM's residue-level mutation sensitivity), instead of the
+# per-cell best-RF-baseline embedding.
+#
+# Per-residue novelty:
+#   novelty[r] = ||MutaPLM[r] - aa_typical_mean[aa[r]]|| / aa_typical_std[aa[r]]
+# where aa_typical statistics are precomputed once over the training
+# corpus and cached at <datafolder>/aa_typical.pt. Mutations stand
+# out because their MutaPLM vector deviates from the typical
+# embedding for the residue's amino acid type — no explicit (WT,
+# mutant) labels needed.
+#
+# Pocket attention:
+#   pocket_logit[r] = MLP([MutaPLM[r], novelty[r], degree(r)])
+#   pocket_weight[r] = softmax(pocket_logit) over r in same protein
+#   prot_pool = sum_r (pocket_weight[r] * residue_h[r])
+#
+# Cells: same 10 as v3 (largest historical PSICHIC-vs-RF gap).
+# Embedding source forced to MUTAPLM regardless of the per-cell
+# best-RF choice in the historical benchmark.
+#
+# Outputs land under TRACE_Kin_Results_v4_mapgnn/<dataset>/<task_name>/
+# so they don't collide with prior v3 trees.
+# =============================================================================
+
+# --- Environment -------------------------------------------------------------
+ml purge
+
+(... more ...)
+------------------------------------------------------------
+
+TERM_MEMLIMIT: job killed after reaching LSF memory usage limit.
+Exited with exit code 1.
+
+Resource usage summary:
+
+    CPU time :                                   432.00 sec.
+    Max Memory :                                 128000 MB
+    Average Memory :                             23176.37 MB
+    Total Requested Memory :                     128000.00 MB
+    Delta Memory :                               0.00 MB
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                23
+    Run time :                                   408 sec.
+    Turnaround time :                            1085 sec.
+
+The output (if any) follows:
+
+==========================================
+TRACE-Kin v4 (MAP-GNN) PER-FOLDER task 6/10
+==========================================
+Date:        Sun May 10 22:04:56 EDT 2026
+Dataset:     /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_MUTAPLM_embedding_cold_protein
+Result:      /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v4_mapgnn/MPEK_dataset/MPEK_kcat_MUTAPLM_embedding_cold_protein
+Config:      training/config_v4.json
+MoLFormer:   /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/transformersmodels/ibm/MoLFormer-XL-both-10pct
+Pool CSVs:   (none — per-folder)
+Model:       v4 MAP-GNN (per-folder, no pool, MUTAPLM + novelty + pocket attn + MoLFormer ctx)
+Epochs:      50, batch=16, seed=1, lr=1e-4
+==========================================
+Python 3.12.2
+Python: /sc/arion/work/wangc40/test-env/envs/test/bin/python
+CUDA device: NVIDIA H100 80GB HBM3, sm_90
+============================================================
+TRACE-Kin training
+============================================================
+Datafolder:        /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_MUTAPLM_embedding_cold_protein
+Result path:       /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v4_mapgnn/MPEK_dataset/MPEK_kcat_MUTAPLM_embedding_cold_protein
+Config:            training/config_v4.json
+Pool train CSVs:   (none)
+============================================================
+Loading primary train: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_MUTAPLM_embedding_cold_protein/train.parquet
+Loading primary test: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_MUTAPLM_embedding_cold_protein/test.parquet
+Loading primary val: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_MUTAPLM_embedding_cold_protein/val.parquet
+Detected prot_evo_channels = 4096
+seq2feat: 6594 unique sequences.
+Loading MoLFormer-XL from /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/transformersmodels/ibm/MoLFormer-XL-both-10pct
+Computing MoLFormer embeddings for 2788 unique SMILES (batch_size=64)
+  embedded 64/2788
+  embedded 1344/2788
+  embedded 2624/2788
+Saved MoLFormer cache: /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_MUTAPLM_embedding_cold_protein/molformer_emb.pt (2788 SMILES)
+MoLFormer embeddings: 2788 unique SMILES, dim=768
+model_version: v4, use_swa: False
+Building protein graphs from scratch (this can be slow)...
+Computing aa_typical from 6594 proteins...
+  20 amino acid types observed; saving cache to /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset/MPEK_dataset/MPEK_kcat_MUTAPLM_embedding_cold_protein/aa_typical.pt
+Building ligand graphs from scratch...
+
+==========================================
+Array task 6/10: FAIL (MPEK_kcat_MUTAPLM_embedding_cold_protein)
+No test_prediction_seed*.csv at /sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v4_mapgnn/MPEK_dataset/MPEK_kcat_MUTAPLM_embedding_cold_protein
+==========================================
+
+
+PS:
+
+Read file <242902816.6.stderr> for stderr output of this job.
+
