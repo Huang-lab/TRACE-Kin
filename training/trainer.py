@@ -181,9 +181,8 @@ class Trainer(object):
                         mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
                         # v3 FP-MLP ChemBERT/MoLFormer embedding; v1 ignores this kwarg.
                         chembert_fp=getattr(data, 'chembert_fp', None),
-                        # v4 per-residue MutaPLM-typical mean/std (None for v1/v3).
-                        aa_typical_mean=getattr(data, 'aa_typical_mean', None),
-                        aa_typical_std=getattr(data, 'aa_typical_std', None)
+                        # v4 per-residue amino-acid index (None for v1/v3).
+                        prot_aa_idx=getattr(data, 'prot_aa_idx', None)
                     )
                     ## Loss compute
                     cls_loss = 0
@@ -439,9 +438,8 @@ class Trainer(object):
                         mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
                         # v3 FP-MLP ChemBERT/MoLFormer embedding; v1 ignores this kwarg.
                         chembert_fp=getattr(data, 'chembert_fp', None),
-                        # v4 per-residue MutaPLM-typical mean/std (None for v1/v3).
-                        aa_typical_mean=getattr(data, 'aa_typical_mean', None),
-                        aa_typical_std=getattr(data, 'aa_typical_std', None)
+                        # v4 per-residue amino-acid index (None for v1/v3).
+                        prot_aa_idx=getattr(data, 'prot_aa_idx', None)
                     )
                     ## Loss compute
                     cls_loss = 0
@@ -629,9 +627,8 @@ class Trainer(object):
                         mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
                         # v3 FP-MLP ChemBERT/MoLFormer embedding; v1 ignores this kwarg.
                         chembert_fp=getattr(data, 'chembert_fp', None),
-                        # v4 per-residue MutaPLM-typical mean/std (None for v1/v3).
-                        aa_typical_mean=getattr(data, 'aa_typical_mean', None),
-                        aa_typical_std=getattr(data, 'aa_typical_std', None)
+                        # v4 per-residue amino-acid index (None for v1/v3).
+                        prot_aa_idx=getattr(data, 'prot_aa_idx', None)
                     )
                 ## Loss compute
                 cls_loss = 0
@@ -760,9 +757,8 @@ class Trainer(object):
                         mol_batch=data.mol_x_batch, prot_batch=data.prot_node_aa_batch, clique_batch=data.clique_x_batch,
                         # v3 FP-MLP ChemBERT/MoLFormer embedding; v1 ignores this kwarg.
                         chembert_fp=getattr(data, 'chembert_fp', None),
-                        # v4 per-residue MutaPLM-typical mean/std (None for v1/v3).
-                        aa_typical_mean=getattr(data, 'aa_typical_mean', None),
-                        aa_typical_std=getattr(data, 'aa_typical_std', None)
+                        # v4 per-residue amino-acid index (None for v1/v3).
+                        prot_aa_idx=getattr(data, 'prot_aa_idx', None)
                 )
                 ## Loss compute
                 cls_loss = 0

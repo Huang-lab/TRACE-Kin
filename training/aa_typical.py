@@ -85,22 +85,57 @@ def compute_aa_typical(protein_dict: dict, embedding_key: str = "token_represent
     return aa_typical
 
 
-def per_residue_typical_tensors(seq_str: str, aa_typical: dict, D: int):
-    """Build per-residue (mean, std) tensors of shape (L, D) for a single protein.
+def aa_typical_to_buffers(aa_typical: dict):
+    """Convert dict[aa]→(mean, std) into compact buffer tensors + index map.
 
-    Residues whose AA is missing from aa_typical (rare; e.g., 'X' or 'B')
-    fall back to mean=0, std=1, which makes their novelty equal to the raw
-    embedding norm (large but constant — won't dominate softmax).
+    Returns
+    -------
+    aa_to_idx : dict[str, int]
+        Maps each amino-acid letter present in aa_typical to a contiguous
+        index 0..n_aa−1. Reserved last index ``n_aa`` is the "unknown"
+        slot (mean=0, std=1) for residues whose AA isn't in aa_typical
+        (e.g., 'X', 'B', 'U', 'O', 'Z') — their novelty equals the raw
+        embedding norm and stays bounded.
+    means : Tensor (n_aa+1, D)
+        Stacked per-AA mean MutaPLM vectors, with the unknown row
+        (zeros) at the end.
+    stds : Tensor (n_aa+1, D)
+        Stacked per-AA std MutaPLM vectors, with the unknown row (ones)
+        at the end.
+
+    Memory: 22 known + 1 unknown × 4096 × 2 × 4 bytes ≈ 750 KB total.
+    Replaces the prior per-residue (L, D) duplication that consumed
+    ~85 GB across the 6607-protein corpus when D=4096.
     """
+    aas = sorted(aa_typical.keys())
+    aa_to_idx = {aa: i for i, aa in enumerate(aas)}
+    if not aas:
+        raise ValueError("aa_typical is empty; aa_typical_to_buffers got nothing to stack.")
+    D = int(aa_typical[aas[0]][0].shape[-1])
+
+    means = torch.zeros((len(aas) + 1, D), dtype=torch.float32)
+    stds = torch.ones((len(aas) + 1, D), dtype=torch.float32)
+    for aa, idx in aa_to_idx.items():
+        m, s = aa_typical[aa]
+        means[idx] = m.float()
+        stds[idx] = s.float()
+    # Unknown slot stays mean=0, std=1 (default-initialized above).
+    return aa_to_idx, means, stds
+
+
+def seq_to_aa_idx(seq_str: str, aa_to_idx: dict) -> torch.Tensor:
+    """Map an amino-acid sequence string to per-residue index tensor (L,).
+
+    Residues whose AA isn't in ``aa_to_idx`` are mapped to the unknown
+    slot (max_index + 1 = len(aa_to_idx)). Returns an int64 tensor.
+    """
+    unknown_idx = len(aa_to_idx)
     L = len(seq_str)
-    mean_t = torch.zeros((L, D), dtype=torch.float32)
-    std_t = torch.ones((L, D), dtype=torch.float32)
+    out = torch.full((L,), unknown_idx, dtype=torch.long)
     for i, aa in enumerate(seq_str):
-        if aa in aa_typical:
-            m, s = aa_typical[aa]
-            mean_t[i] = m
-            std_t[i] = s
-    return mean_t, std_t
+        if aa in aa_to_idx:
+            out[i] = aa_to_idx[aa]
+    return out
 
 
 def load_or_compute_aa_typical(cache_path: str, protein_dict: dict,

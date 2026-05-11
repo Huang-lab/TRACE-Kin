@@ -396,9 +396,8 @@ def virtual_screening(screen_df, model, data_loader, result_path, save_interpret
                     # kwarg. Without it, v3/v4 raise rather than silently
                     # producing the bare (uncalibrated) GNN head's output.
                     chembert_fp=getattr(data, 'chembert_fp', None),
-                    # v4 per-residue MutaPLM-typical mean/std (None for v1/v3).
-                    aa_typical_mean=getattr(data, 'aa_typical_mean', None),
-                    aa_typical_std=getattr(data, 'aa_typical_std', None),
+                    # v4 per-residue amino-acid index (None for v1/v3).
+                    prot_aa_idx=getattr(data, 'prot_aa_idx', None),
                     # save_cluster
                     save_cluster=save_cluster
             )

@@ -162,9 +162,8 @@ class TraceKinPredictor:
                     clique_batch=batch.clique_x_batch,
                     # v3 FP-MLP ChemBERT/MoLFormer embedding; v1 ignores this kwarg.
                     chembert_fp=getattr(batch, 'chembert_fp', None),
-                    # v4 per-residue MutaPLM-typical mean/std (None for v1/v3).
-                    aa_typical_mean=getattr(batch, 'aa_typical_mean', None),
-                    aa_typical_std=getattr(batch, 'aa_typical_std', None),
+                    # v4 per-residue amino-acid index (None for v1/v3).
+                    prot_aa_idx=getattr(batch, 'prot_aa_idx', None),
                 )
                 value = reg_pred.squeeze().detach().cpu().item()
                 return {

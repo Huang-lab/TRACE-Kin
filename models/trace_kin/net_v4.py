@@ -171,10 +171,11 @@ class TraceKinV4(nn.Module):
         save_cluster: bool = False,
         # v3-style ChemBERT/MoLFormer molecular embedding
         chembert_fp: Optional[torch.Tensor] = None,
-        # v4-specific: per-residue mean/std for novelty (computed offline
-        # via training.aa_typical, batched alongside prot_node_evo)
-        aa_typical_mean: Optional[torch.Tensor] = None,
-        aa_typical_std: Optional[torch.Tensor] = None,
+        # v4-specific: per-residue amino-acid index (L,) into the model's
+        # aa_typical_means/stds buffers. Looked up via index_select inside
+        # the forward to avoid per-protein (L, D) duplication that OOM'd
+        # at D=4096 (MutaPLM).
+        prot_aa_idx: Optional[torch.Tensor] = None,
     ):
         # 1. Run the GNN backbone. Use only residue_x_post_gnn / mol_feature /
         #    attention_dict; discard the backbone's own pred and prot_feature.
@@ -213,22 +214,35 @@ class TraceKinV4(nn.Module):
                 "All model() call sites in trainer.py, "
                 "data_utils.virtual_screening, and inference/ must pass it."
             )
-        if aa_typical_mean is None or aa_typical_std is None:
+        if prot_aa_idx is None:
             raise RuntimeError(
-                "TraceKinV4 requires aa_typical_mean and aa_typical_std "
-                "kwargs (per-residue MutaPLM-typical mean/std for the "
-                "residue's amino acid type, used to compute the novelty "
-                "score). Build via training.aa_typical and attach them "
-                "to MultiGraphData in training/dataset.py."
+                "TraceKinV4 requires prot_aa_idx kwarg (per-residue index "
+                "into the aa_typical_means/stds buffers). Build via "
+                "training.aa_typical.seq_to_aa_idx and attach to "
+                "MultiGraphData as a per-residue feature in "
+                "training/dataset.py."
+            )
+        if not hasattr(self, "aa_typical_means") or not hasattr(self, "aa_typical_stds"):
+            raise RuntimeError(
+                "TraceKinV4 expects aa_typical_means and aa_typical_stds "
+                "buffers to be registered on the model. Pass "
+                "aa_typical_buffers=... to build_model()."
             )
 
-        # 3. Compute novelty per residue:
-        #      novelty[r] = ||residue_evo[r] - aa_typical_mean[r]|| / ||aa_typical_std[r]||
-        # The std-normalization makes the score scale-invariant to which
-        # MutaPLM hidden dim happens to vary most across the corpus.
-        diff = (residue_evo_x.float() - aa_typical_mean.float())
-        norm_factor = aa_typical_std.float().norm(dim=-1).clamp(min=1e-3)
-        novelty = diff.norm(dim=-1) / norm_factor                 # (N_res,)
+        # 3. Lookup per-residue mean/std from the small (n_aa+1, D) buffers,
+        #    then compute novelty:
+        #      novelty[r] = ||residue_evo[r] - mean[aa[r]]|| / ||std[aa[r]]||
+        #    The std-normalization makes the score scale-invariant to
+        #    which MutaPLM hidden dim happens to vary most across the
+        #    corpus. Index_select on the buffer is O(N_res * D) — same
+        #    arithmetic as before, but data is sourced from a 700 KB
+        #    lookup table instead of duplicated per-protein (L, D) tensors.
+        prot_aa_idx_long = prot_aa_idx.long()
+        means = self.aa_typical_means.index_select(0, prot_aa_idx_long)   # (N_res, D)
+        stds = self.aa_typical_stds.index_select(0, prot_aa_idx_long)     # (N_res, D)
+        diff = residue_evo_x.float() - means
+        norm_factor = stds.norm(dim=-1).clamp(min=1e-3)
+        novelty = diff.norm(dim=-1) / norm_factor                          # (N_res,)
 
         # 4. Pocket attention. Inputs per residue: evo embedding, novelty,
         #    graph degree (as a buriedness proxy). Logits → softmax over

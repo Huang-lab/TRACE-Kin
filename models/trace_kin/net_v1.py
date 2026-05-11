@@ -238,11 +238,10 @@ class TraceKinV1(torch.nn.Module):
                 mol_batch=None, prot_batch=None, clique_batch=None,
                 ## only if you're interested in clustering algorithm
                 save_cluster = False,
-                # v3 dual-head ChemBERT embedding + v4 aa_typical (ignored by
+                # v3 dual-head ChemBERT embedding + v4 prot_aa_idx (ignored by
                 # v1; accepted so the same trainer call site works for v1/v3/v4).
                 chembert_fp=None,
-                aa_typical_mean=None,
-                aa_typical_std=None):
+                prot_aa_idx=None):
         # Init variables        
         reg_pred = None
         cls_pred = None

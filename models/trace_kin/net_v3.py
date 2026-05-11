@@ -153,8 +153,7 @@ class TraceKinV3(nn.Module):
         chembert_fp: Optional[torch.Tensor] = None,
         # v4-specific (ignored here; accepted so the trainer call site works
         # for v1/v3/v4 without branching).
-        aa_typical_mean: Optional[torch.Tensor] = None,
-        aa_typical_std: Optional[torch.Tensor] = None,
+        prot_aa_idx: Optional[torch.Tensor] = None,
     ):
         # 1. Run the GNN backbone. We use only its mol_pool / prot_pool /
         #    attention_dict; the backbone's own pred_gnn is discarded.

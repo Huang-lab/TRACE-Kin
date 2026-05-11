@@ -66,8 +66,12 @@ class ProteinMoleculeDataset(Dataset):
                 ## loudly if chembert_fp is missing at __getitem__ time.
 
             for _, v in self.prots.items():
-                v['seq_feat'] = v['seq_feat'].float()
-                v['token_representation'] = v['token_representation'].float()
+                v['seq_feat'] = v['seq_feat'].float()  # 33-d, ~50 KB per protein, OK to upcast
+                # IMPORTANT: do NOT upcast token_representation here. At
+                # MutaPLM's 4096-d × 6607 proteins × 400 res, that conversion
+                # would balloon CPU RAM from ~21 GB (half) to ~43 GB (float).
+                # Convert per-batch in __getitem__ instead — only ~100 MB per
+                # batch with batch_size=16.
                 v['num_nodes'] = len(v['seq'])
                 v['node_pos'] = torch.arange(len(v['seq'])).reshape(-1,1)
                 v['edge_weight'] = v['edge_weight'].float()
@@ -133,16 +137,21 @@ class ProteinMoleculeDataset(Dataset):
             ## Prot
             prot_seq = prot['seq']
             prot_node_aa = prot['seq_feat']
-            prot_node_evo = prot['token_representation']
+            # token_representation is stored at half precision in protein.pt
+            # (~21 GB total for 6607 proteins at 4096-d MutaPLM). Convert
+            # to float per-protein at __getitem__ time so the per-batch
+            # GPU dtype matches the model's float32 weights, without
+            # doubling CPU RAM by upcasting the whole cache at __init__.
+            prot_node_evo = prot['token_representation'].float()
             prot_num_nodes = prot['num_nodes']
             prot_node_pos = prot['node_pos']
             prot_edge_index = prot['edge_index']
             prot_edge_weight = prot['edge_weight']
-            ## v4 per-residue MutaPLM-typical mean/std (only present when
-            ## preprocess() was called with model_version="v4"; v1/v3
-            ## don't read these so missing-key fallback is fine).
-            aa_typical_mean = prot.get('aa_typical_mean')
-            aa_typical_std = prot.get('aa_typical_std')
+            ## v4 per-residue amino-acid index (L,) — small int tensor
+            ## that the model uses to look up aa_typical means/stds from
+            ## its own (n_aa+1, D) buffers. Only present when preprocess()
+            ## was called with model_version="v4"; v1/v3 don't read it.
+            prot_aa_idx = prot.get('prot_aa_idx')
         else:
             # MOL
             mol_x = mol['atom_idx'].long().view(-1, 1)
@@ -168,9 +177,8 @@ class ProteinMoleculeDataset(Dataset):
             prot_node_pos = torch.arange(len(prot['seq'])).reshape(-1,1)
             prot_edge_index = prot['edge_index']
             prot_edge_weight = prot['edge_weight'].float()
-            ## v4 per-residue MutaPLM-typical mean/std
-            aa_typical_mean = prot.get('aa_typical_mean')
-            aa_typical_std = prot.get('aa_typical_std')
+            ## v4 per-residue amino-acid index
+            prot_aa_idx = prot.get('prot_aa_idx')
 
         kwargs = dict(
                 ## MOLECULE
@@ -190,13 +198,14 @@ class ProteinMoleculeDataset(Dataset):
                 ## keys
                 mol_key = mol_key, prot_key = prot_key,
         )
-        ## v4 per-residue MutaPLM-typical mean/std (per-residue, shape
-        ## (L, D); PyG batches them along dim=0 alongside prot_node_evo).
-        ## Only attached when preprocess() was called with model_version="v4".
-        if aa_typical_mean is not None:
-            kwargs['aa_typical_mean'] = aa_typical_mean
-        if aa_typical_std is not None:
-            kwargs['aa_typical_std'] = aa_typical_std
+        ## v4 per-residue amino-acid index (L,) — int tensor, batched
+        ## along dim=0 by PyG to (sum_L,). Only attached when preprocess()
+        ## was called with model_version="v4". The model uses these to
+        ## index_select per-residue means/stds from its own (n_aa+1, D)
+        ## buffers, avoiding the per-protein (L, D) duplication that
+        ## OOM'd at D=4096.
+        if prot_aa_idx is not None:
+            kwargs['prot_aa_idx'] = prot_aa_idx
         return MultiGraphData(**kwargs)
 
 def maybe_num_nodes(index, num_nodes=None):

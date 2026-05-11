@@ -37,7 +37,7 @@ from training.data_utils import (
     compute_pna_degrees,
     virtual_screening,
 )
-from training.aa_typical import load_or_compute_aa_typical, per_residue_typical_tensors
+from training.aa_typical import load_or_compute_aa_typical, aa_typical_to_buffers, seq_to_aa_idx
 from training.dataset import ProteinMoleculeDataset
 from training.ligand_init import ligand_init
 from training.metrics import evaluate_reg
@@ -137,6 +137,18 @@ def set_random_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
+
+
+def print_mem(label: str) -> None:
+    """Print process resident memory at a checkpoint. ru_maxrss is KB on
+    Linux (the only OS we run on at HPC), bytes on macOS — we report the
+    Linux interpretation since the LSF runs there."""
+    try:
+        import resource
+        rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        print(f"[mem] {label:<40s} max RSS = {rss_kb / (1024 * 1024):.2f} GB")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +347,14 @@ def load_split_dataframes(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
                               protein_col=args.protein_col, feature_col=args.feature_col)
     print(f"seq2feat: {len(seq2feat)} unique sequences.")
 
+    # Drop the protein_features column from all DataFrames now that we've
+    # consolidated into seq2feat. At MutaPLM's 4096-d this column carries
+    # 30k+ rows × 400 res × 4096 × 4 bytes ≈ many GB even with pandas
+    # reference-sharing; freeing it cuts a meaningful chunk of CPU RAM.
+    for _df in (train_df, test_df, val_df):
+        if _df is not None and args.feature_col in _df.columns:
+            _df.drop(columns=[args.feature_col], inplace=True)
+
     # Molecular embeddings (768-d) for v3's chembert_proj. Two sources:
     #
     #  1. --molformer_path set: live MoLFormer-XL inference. Cached
@@ -370,6 +390,12 @@ def load_split_dataframes(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
                                           ligand_col=args.ligand_col,
                                           feature_col=args.metabolite_feature_col)
         print(f"smi2chembert (from parquet): {len(smi2chembert)} unique SMILES.")
+
+    # Drop metabolite_features column too (now consolidated into smi2chembert).
+    # Whether we used MoLFormer or parquet, the column is no longer read.
+    for _df in (train_df, test_df, val_df):
+        if _df is not None and args.metabolite_feature_col in _df.columns:
+            _df.drop(columns=[args.metabolite_feature_col], inplace=True)
 
     # Standardize column names for downstream code.
     train_df = normalize_columns(train_df, args.protein_col, args.ligand_col, args.label_col)
@@ -408,7 +434,8 @@ def load_split_dataframes(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
 # ---------------------------------------------------------------------------
 def preprocess(folder: str, proteins: list[str], ligands: list[str],
                seq2feat: dict, smi2chembert: dict,
-               force_rebuild: bool, model_version: str = "v3") -> tuple[dict, dict]:
+               force_rebuild: bool,
+               model_version: str = "v3") -> tuple[dict, dict, dict | None]:
     protein_path = os.path.join(folder, "protein.pt")
     ligand_path = os.path.join(folder, "ligand.pt")
 
@@ -420,10 +447,13 @@ def preprocess(folder: str, proteins: list[str], ligands: list[str],
         protein_dict = protein_init_with_embedding(proteins, seq2feat=seq2feat)
         torch.save(protein_dict, protein_path)
 
-    # v4 needs per-residue (mean, std) MutaPLM-typical tensors per protein.
-    # Compute aa_typical once across the whole protein corpus, then attach
-    # per-residue lookups to each protein's dict so the dataset/collator
-    # can carry them through batching alongside prot_node_evo.
+    # v4: compute aa_typical once across the whole protein corpus, build
+    # compact (n_aa+1, D) lookup tensors plus per-residue index (L,) per
+    # protein. The lookup tensors are small (≈700 KB) and live as model
+    # buffers; the per-residue index is L bytes per protein. This avoids
+    # the prior (L, D) per-protein duplication that consumed ~85 GB RAM
+    # when D=4096 (MutaPLM).
+    aa_typical_buffers = None
     if model_version == "v4":
         aa_typical_path = os.path.join(folder, "aa_typical.pt")
         aa_typical = load_or_compute_aa_typical(
@@ -431,15 +461,18 @@ def preprocess(folder: str, proteins: list[str], ligands: list[str],
             protein_dict=protein_dict,
             force_rebuild=force_rebuild,
         )
-        # Attach per-residue mean/std tensors so the dataset can pass them
-        # through batching as per-residue features. Shape (L, D) per protein.
-        # Sniff D from the first protein's existing token_representation.
-        sample_seq = next(iter(protein_dict))
-        D = int(protein_dict[sample_seq]["token_representation"].shape[-1])
+        aa_to_idx, aa_means, aa_stds = aa_typical_to_buffers(aa_typical)
+        print(f"  aa_typical buffers: means/stds shape {tuple(aa_means.shape)}, "
+              f"{len(aa_to_idx)} known + 1 unknown AA slot")
+        aa_typical_buffers = {
+            "aa_to_idx": aa_to_idx,
+            "aa_means": aa_means,
+            "aa_stds": aa_stds,
+        }
+        # Attach per-residue index (L,) per protein — int64, ~L bytes per
+        # protein. PyG batches this along dim=0 alongside prot_node_evo.
         for seq, prot in protein_dict.items():
-            mean_t, std_t = per_residue_typical_tensors(prot["seq"], aa_typical, D)
-            prot["aa_typical_mean"] = mean_t
-            prot["aa_typical_std"] = std_t
+            prot["prot_aa_idx"] = seq_to_aa_idx(prot["seq"], aa_to_idx)
 
     if os.path.exists(ligand_path) and not force_rebuild:
         print(f"Reusing ligand cache: {ligand_path}")
@@ -465,7 +498,7 @@ def preprocess(folder: str, proteins: list[str], ligands: list[str],
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return protein_dict, ligand_dict
+    return protein_dict, ligand_dict, aa_typical_buffers
 
 
 # ---------------------------------------------------------------------------
@@ -513,8 +546,15 @@ def make_loaders(train_df, test_df, val_df, ligand_dict, protein_dict,
 # ---------------------------------------------------------------------------
 # Model factory
 # ---------------------------------------------------------------------------
-def build_model(model_config: dict, mol_deg, prot_deg, device: str):
-    """Instantiate v1 or v3 from the config."""
+def build_model(model_config: dict, mol_deg, prot_deg, device: str,
+                aa_typical_buffers: dict | None = None):
+    """Instantiate v1 / v3 / v4 from the config.
+
+    For v4, ``aa_typical_buffers`` (containing ``aa_means`` and ``aa_stds``
+    tensors) is registered onto the model as buffers via ``register_buffer``
+    so the per-residue mean/std lookup happens inside the GPU forward pass
+    without per-protein duplication.
+    """
     version = model_config.get("model_version", "v1")
     params = model_config["params"]
     tasks = model_config["tasks"]
@@ -560,6 +600,16 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str):
             chembert_dim=params.get("chembert_dim", 768),
             pocket_hidden=params.get("pocket_hidden", 64),
         )
+        if aa_typical_buffers is None:
+            raise ValueError(
+                "v4 requires aa_typical_buffers (computed in preprocess); "
+                "got None. Check that preprocess() ran with model_version='v4'."
+            )
+        # Register buffers AFTER model creation but BEFORE .to(device), so
+        # the buffers move with the model. register_buffer auto-saves with
+        # state_dict and auto-moves on .to(device).
+        model.register_buffer("aa_typical_means", aa_typical_buffers["aa_means"])
+        model.register_buffer("aa_typical_stds", aa_typical_buffers["aa_stds"])
     else:
         raise ValueError(f"Unknown model_version: {version!r}")
 
@@ -585,9 +635,11 @@ def main():
     print(f"Pool train CSVs:   {args.pool_train_csvs or '(none)'}")
     print("=" * 60)
 
+    print_mem("before load_split_dataframes")
     # 1. Load splits + build seq2feat / smi2chembert (single-pass loading).
     (train_df, test_df, val_df, proteins, ligands,
      seq2feat, smi2chembert, embedding_dim, chembert_dim) = load_split_dataframes(args)
+    print_mem("after load_split_dataframes")
 
     # 2. Load and update model config.
     with open(args.config_path) as f:
@@ -610,12 +662,20 @@ def main():
     print(f"model_version: {model_config['model_version']}, use_swa: {swa_block['use_swa']}")
 
     # 3. Preprocess proteins/ligands (with cache). model_version controls
-    #    whether v4-specific aa_typical (per-residue MutaPLM mean/std) is
-    #    computed and attached to protein_dict.
-    protein_dict, ligand_dict = preprocess(
+    #    whether v4-specific aa_typical (compact lookup buffers + per-residue
+    #    index) is computed. aa_typical_buffers is None for v1/v3.
+    protein_dict, ligand_dict, aa_typical_buffers = preprocess(
         args.datafolder, proteins, ligands, seq2feat, smi2chembert,
         args.force_rebuild, model_version=model_config["model_version"],
     )
+    print_mem("after preprocess")
+    # seq2feat (~21 GB at MutaPLM 4096-d × 6607 unique seqs) is fully
+    # consumed by protein_init_with_embedding once protein_dict is built.
+    # Free it so it doesn't sit in RAM through training. smi2chembert is
+    # smaller (~20 MB) but free for symmetry.
+    del seq2feat, smi2chembert
+    import gc; gc.collect()
+    print_mem("after free seq2feat/smi2chembert")
 
     # 4. Build DataLoaders (with row filtering).
     train_loader, test_loader, val_loader, train_df, test_df, val_df = make_loaders(
@@ -624,6 +684,7 @@ def main():
     )
     print(f"loaders ready: train={len(train_loader)} test={len(test_loader)} "
           f"val={len(val_loader) if val_loader is not None else 0}")
+    print_mem("after make_loaders")
 
     # 5. PNA degree statistics (computed once on train, cached per dataset).
     degree_path = os.path.join(args.datafolder, "degree.pt")
@@ -643,7 +704,10 @@ def main():
     os.makedirs(model_dir, exist_ok=True)
     torch.save(degree_dict, os.path.join(model_dir, "degree.pt"))
 
-    model, model_version = build_model(model_config, mol_deg, prot_deg, args.device)
+    model, model_version = build_model(
+        model_config, mol_deg, prot_deg, args.device,
+        aa_typical_buffers=aa_typical_buffers,
+    )
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Built TraceKin{model_version.upper()} with {n_params:,} parameters")
 

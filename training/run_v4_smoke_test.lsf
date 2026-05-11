@@ -5,7 +5,7 @@
 #BSUB -R h100nvl
 #BSUB -gpu num=1
 #BSUB -n 8
-#BSUB -R "rusage[mem=8000]"
+#BSUB -R "rusage[mem=15000]"
 #BSUB -R "span[hosts=1]"
 #BSUB -W 00:30
 #BSUB -o %J.v4_smoke.stdout
@@ -22,8 +22,9 @@
 # committing the 10-cell × 3-seed perfolder array. Catches:
 #   - per-residue MutaPLM embedding loaded from parquet (must be 2D, not 1D)
 #   - aa_typical compute + cache write (<datafolder>/aa_typical.pt)
-#   - per-residue aa_typical_mean / aa_typical_std flowing through
-#     MultiGraphData → trainer → net_v4
+#   - aa_typical computed → buffers (means, stds, n_aa+1×D ≈ 700 KB)
+#     registered on the model + per-residue aa_idx (L,) attached to
+#     each protein flowing through MultiGraphData → trainer → net_v4
 #   - novelty score computation, pocket attention forward pass
 #   - MoLFormer-XL HF load + chembert_proj residual still works
 #   - virtual_screening + final test prediction CSV
