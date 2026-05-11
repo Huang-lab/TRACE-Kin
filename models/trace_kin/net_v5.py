@@ -220,7 +220,7 @@ class MultiHeadCrossAttention(nn.Module):
 
 
 class DrugPNAEncoder(nn.Module):
-    """Ligand GNN encoder using PNA (same validated architecture as v1 drug branch)."""
+    """Ligand GNN encoder using PNA (matches v1's Drug_PNAConv wrapper)."""
 
     def __init__(self, mol_in_channels: int, d_model: int, mol_deg: torch.Tensor,
                  n_layers: int = 3, heads: int = 8, dropout: float = 0.1):
@@ -230,12 +230,14 @@ class DrugPNAEncoder(nn.Module):
 
         self.atom_type_encoder = nn.Embedding(20, d_model)
         self.atom_feat_encoder = MLP([mol_in_channels, d_model * 2, d_model], out_norm=True)
+        self.bond_encoder = nn.Embedding(5, d_model)
 
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
         for _ in range(n_layers):
             self.convs.append(PNAConv(
                 in_channels=d_model, out_channels=d_model,
+                edge_dim=d_model,
                 aggregators=['mean', 'min', 'max', 'std'],
                 scalers=['identity', 'amplification', 'linear'],
                 deg=mol_deg, pre_layers=2, post_layers=1, towers=heads,
@@ -247,8 +249,9 @@ class DrugPNAEncoder(nn.Module):
 
     def forward(self, mol_x, mol_x_feat, bond_x, atom_edge_index, mol_batch):
         atom_h = self.atom_type_encoder(mol_x.squeeze()) + self.atom_feat_encoder(mol_x_feat)
+        encoded_bonds = self.bond_encoder(bond_x.squeeze())
         for conv, norm in zip(self.convs, self.norms):
-            atom_h = conv(atom_h, bond_x, atom_edge_index)
+            atom_h = conv(atom_h, atom_edge_index, encoded_bonds)
             atom_h = norm(atom_h, mol_batch)
             atom_h = self.dropout(F.relu(atom_h))
 
