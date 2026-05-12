@@ -1,0 +1,152 @@
+#!/bin/bash
+#BSUB -J trace_kin_v6c_perfolder_s1[1-10]
+#BSUB -P acc_DiseaseGeneCell
+#BSUB -q gpu
+#BSUB -R h100nvl
+#BSUB -gpu num=1
+#BSUB -n 16
+#BSUB -R "rusage[mem=15000]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 48:00
+#BSUB -o %J.%I.stdout
+#BSUB -eo %J.%I.stderr
+#BSUB -L /bin/bash
+
+# =============================================================================
+# TRACE-Kin v6c (Hierarchical Pocket Graph + MMCAF) PER-FOLDER — top-10 cells
+# =============================================================================
+# Submit with:
+#     bsub < training/run_v6c_perfolder_s1.lsf
+#
+# v6c = Pocket Graph: MutaPLM per-residue (4096) -> Linear(512) -> GATv2 on
+# contact-map graph (3 layers, 8 heads) -> dynamic pocket identification
+# (top-64 residues via cross-attn) -> MMCAF at pocket level -> hierarchical
+# pooling (gated pocket + global fusion) -> regression head.
+# Ligand: PNA GNN + MoLFormer-XL (768-d) context.
+#
+# All cells use MUTAPLM embedding.
+#
+# For seeds 2 and 3, submit:
+#     bsub < training/run_v6c_perfolder_s2.lsf
+#     bsub < training/run_v6c_perfolder_s3.lsf
+# =============================================================================
+
+# --- Environment -------------------------------------------------------------
+ml purge
+source ~/.bashrc
+module load anaconda3/2024.06
+source activate test
+module load cuda/12.4.0
+export RAYON_NUM_THREADS=4
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+
+# --- Knobs (env overrides) ---------------------------------------------------
+ENZYME_BASE="${ENZYME_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset}"
+RESULT_BASE="${RESULT_BASE:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v6c_pocket_graph}"
+MOLFORMER_PATH="${MOLFORMER_PATH:-/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/transformersmodels/ibm/MoLFormer-XL-both-10pct}"
+CONFIG_PATH="${CONFIG_PATH:-training/config_v6c.json}"
+EPOCHS="${EPOCHS:-100}"
+BATCH_SIZE="${BATCH_SIZE:-32}"
+SEED=1
+LRATE="${LRATE:-3e-4}"
+
+# --- Per-array-index table (10 cells, MUTAPLM embedding) ---------------------
+JOBS=(
+    "EITLEM_dataset|EITLEM_kkm_MUTAPLM_embedding_cold_drug|"             # 1: kcat_km cold_drug
+    "catpred_dataset|catpred_kcat_MUTAPLM_embedding_random|"             # 2: kcat    random
+    "inhouse_dataset|inhouse_Kd_MUTAPLM_embedding_random|"               # 3: Kd      random
+    "EITLEM_dataset|EITLEM_kkm_MUTAPLM_embedding_random|"                # 4: kcat_km random
+    "EITLEM_dataset|EITLEM_kcat_MUTAPLM_embedding_cold_drug|"            # 5: kcat    cold_drug
+    "MPEK_dataset|MPEK_kcat_MUTAPLM_embedding_cold_protein|"             # 6: kcat    cold_protein
+    "EITLEM_dataset|EITLEM_km_MUTAPLM_embedding_cold_protein|"           # 7: km      cold_protein
+    "catpred_dataset|catpred_ki_MUTAPLM_embedding_cold_protein|"         # 8: ki      cold_protein
+    "EITLEM_dataset|EITLEM_kkm_MUTAPLM_embedding_cold_protein|"          # 9: kcat_km cold_protein
+    "EITLEM_dataset|EITLEM_kcat_MUTAPLM_embedding_cold_protein|"         # 10: kcat   cold_protein
+)
+
+# --- Resolve this array task's row ------------------------------------------
+IDX=$((LSB_JOBINDEX - 1))
+if [ "$IDX" -lt 0 ] || [ "$IDX" -ge "${#JOBS[@]}" ]; then
+    echo "ERROR: LSB_JOBINDEX=$LSB_JOBINDEX out of range (1..${#JOBS[@]})"
+    exit 2
+fi
+ROW="${JOBS[$IDX]}"
+IFS='|' read -r SRC NAME POOLS <<< "$ROW"
+
+DATASET_DIR="$ENZYME_BASE/$SRC/$NAME"
+RESULT_PATH="$RESULT_BASE/$SRC/$NAME"
+
+POOL_TRAIN_CSVS=""
+if [ -n "$POOLS" ]; then
+    IFS=';' read -ra REL_LIST <<< "$POOLS"
+    ABS_LIST=()
+    for rel in "${REL_LIST[@]}"; do
+        ABS_LIST+=("$ENZYME_BASE/$rel")
+    done
+    POOL_TRAIN_CSVS=$(IFS=','; echo "${ABS_LIST[*]}")
+fi
+
+# --- Banner ------------------------------------------------------------------
+echo "=========================================="
+echo "TRACE-Kin v6c (Pocket Graph + MMCAF) PER-FOLDER task ${LSB_JOBINDEX}/${#JOBS[@]}"
+echo "=========================================="
+echo "Date:        $(date)"
+echo "Dataset:     $DATASET_DIR"
+echo "Result:      $RESULT_PATH"
+echo "Config:      $CONFIG_PATH"
+echo "MoLFormer:   $MOLFORMER_PATH"
+echo "Pool CSVs:   ${POOL_TRAIN_CSVS:-(none — per-folder)}"
+echo "Model:       v6c Pocket Graph (GATv2 x3 + Dynamic Pocket + MMCAF + Hierarchical Pool)"
+echo "Epochs:      $EPOCHS, batch=$BATCH_SIZE, seed=$SEED, lr=$LRATE"
+echo "=========================================="
+
+python --version
+echo "Python: $(which python)"
+python - <<'PY'
+import sys, torch
+if not torch.cuda.is_available():
+    print("ERROR: CUDA not available."); sys.exit(86)
+print(f"CUDA device: {torch.cuda.get_device_name(0)}, "
+      f"sm_{torch.cuda.get_device_capability(0)[0]}{torch.cuda.get_device_capability(0)[1]}")
+PY
+
+# --- Train -------------------------------------------------------------------
+EXTRA_ARGS=()
+if [ -n "$POOL_TRAIN_CSVS" ]; then
+    EXTRA_ARGS+=(--pool_train_csvs "$POOL_TRAIN_CSVS")
+fi
+
+python training/train_trace_kin.py \
+    --datafolder "$DATASET_DIR" \
+    --result_path "$RESULT_PATH" \
+    --config_path "$CONFIG_PATH" \
+    --device cuda:0 \
+    --epochs "$EPOCHS" \
+    --batch_size "$BATCH_SIZE" \
+    --seed "$SEED" \
+    --lrate "$LRATE" \
+    --protein_col Sequence \
+    --feature_col protein_features \
+    --molformer_path "$MOLFORMER_PATH" \
+    --ligand_col Smiles \
+    --label_col Label \
+    --regression_task \
+    --model_version v6c \
+    --amp \
+    "${EXTRA_ARGS[@]}"
+
+# --- Result check ------------------------------------------------------------
+if ls "$RESULT_PATH"/test_prediction_seed*.csv 1>/dev/null 2>&1; then
+    echo ""
+    echo "=========================================="
+    echo "Array task ${LSB_JOBINDEX}/${#JOBS[@]}: OK ($NAME)"
+    echo "=========================================="
+else
+    echo ""
+    echo "=========================================="
+    echo "Array task ${LSB_JOBINDEX}/${#JOBS[@]}: FAIL ($NAME)"
+    echo "No test_prediction CSV found. Check stderr."
+    echo "=========================================="
+    exit 1
+fi

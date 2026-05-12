@@ -1,0 +1,122 @@
+#!/bin/bash
+#BSUB -J trace_kin_v6c_smoke
+#BSUB -P acc_DiseaseGeneCell
+#BSUB -q gpu
+#BSUB -R h100nvl
+#BSUB -gpu num=1
+#BSUB -n 8
+#BSUB -R "rusage[mem=15000]"
+#BSUB -R "span[hosts=1]"
+#BSUB -W 01:00
+#BSUB -o %J.v6c_smoke.stdout
+#BSUB -eo %J.v6c_smoke.stderr
+#BSUB -L /bin/bash
+
+# =============================================================================
+# TRACE-Kin v6c (Hierarchical Pocket Graph + MMCAF) smoke test
+# =============================================================================
+# Submit with:
+#     bsub < training/run_v6c_smoke_test.lsf
+#
+# Purpose: validate the v6c architecture end-to-end on one cell before
+# committing the 10-cell x 3-seed array. Checks:
+#   - MutaPLM per-residue embedding loaded from parquet (L, 4096)
+#   - Linear projection 4096 -> 512
+#   - Graph structural encoding (RWSE from contact-map)
+#   - GATv2 on contact-map graph (3 layers, 8 heads, RBF edge features)
+#   - Dynamic pocket identification via protein-to-ligand cross-attention
+#   - MMCAF: bidirectional cross-attention at pocket level
+#   - Hierarchical pooling (gated pocket + global fusion)
+#   - Final regression head + test prediction CSV
+#
+# Runs train_trace_kin.py with a tiny sample (100 rows, 5 epochs) on
+# the EITLEM kkm cold_drug MUTAPLM cell.
+#
+# After success, chain the per-folder arrays:
+#     bsub -w "done(<SMOKE_JOB_ID>)" < training/run_v6c_perfolder_s1.lsf
+#     bsub < training/run_v6c_perfolder_s2.lsf
+#     bsub < training/run_v6c_perfolder_s3.lsf
+# =============================================================================
+
+# --- Environment -------------------------------------------------------------
+ml purge
+source ~/.bashrc
+module load anaconda3/2024.06
+source activate test
+module load cuda/12.4.0
+export RAYON_NUM_THREADS=4
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+
+# --- Knobs -------------------------------------------------------------------
+ENZYME_BASE="/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/drug_discovery/output/data/enzyme_embeddings_dataset"
+RESULT_BASE="/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/TRACE_Kin_Results_v6c_pocket_graph"
+MOLFORMER_PATH="/sc/arion/projects/DiseaseGeneCell/Huang_lab_project/wangcDrugRepoProject/transformersmodels/ibm/MoLFormer-XL-both-10pct"
+CONFIG_PATH="training/config_v6c.json"
+DATASET_DIR="$ENZYME_BASE/EITLEM_dataset/EITLEM_kkm_MUTAPLM_embedding_cold_drug"
+RESULT_PATH="$RESULT_BASE/_smoke"
+
+# --- Banner ------------------------------------------------------------------
+echo "=========================================="
+echo "TRACE-Kin v6c (Pocket Graph + MMCAF) Smoke Test"
+echo "=========================================="
+echo "Date:               $(date)"
+echo "Dataset:            $DATASET_DIR"
+echo "Result dir:         $RESULT_PATH"
+echo "Config:             $CONFIG_PATH"
+echo "MoLFormer:          $MOLFORMER_PATH"
+echo "Sample size:        100 rows train / 50 test"
+echo "Epochs:             5"
+echo "Architecture:       GATv2 x3 + Dynamic Pocket ID + MMCAF + Hierarchical Pool"
+echo "=========================================="
+
+python --version
+echo "Python: $(which python)"
+python - <<'PY'
+import sys, torch
+if not torch.cuda.is_available():
+    print("ERROR: CUDA not available."); sys.exit(86)
+print(f"CUDA device: {torch.cuda.get_device_name(0)}, "
+      f"sm_{torch.cuda.get_device_capability(0)[0]}{torch.cuda.get_device_capability(0)[1]}")
+PY
+
+# --- Train -------------------------------------------------------------------
+python training/train_trace_kin.py \
+    --datafolder "$DATASET_DIR" \
+    --result_path "$RESULT_PATH" \
+    --config_path "$CONFIG_PATH" \
+    --device cuda:0 \
+    --epochs 5 \
+    --batch_size 8 \
+    --seed 1 \
+    --lrate 3e-4 \
+    --protein_col Sequence \
+    --feature_col protein_features \
+    --molformer_path "$MOLFORMER_PATH" \
+    --ligand_col Smiles \
+    --label_col Label \
+    --regression_task \
+    --model_version v6c \
+    --amp \
+    --sample_train 100 \
+    --sample_test 50
+
+# --- Result check ------------------------------------------------------------
+if ls "$RESULT_PATH"/test_prediction_seed*.csv 1>/dev/null 2>&1; then
+    echo ""
+    echo "=========================================="
+    echo "SMOKE TEST: PASS"
+    echo "Result file: $(ls $RESULT_PATH/test_prediction_seed*.csv)"
+    echo "Next: bsub -w \"done($LSB_JOBID)\" < training/run_v6c_perfolder_s1.lsf"
+    echo "      bsub < training/run_v6c_perfolder_s2.lsf"
+    echo "      bsub < training/run_v6c_perfolder_s3.lsf"
+    echo "=========================================="
+else
+    echo ""
+    echo "=========================================="
+    echo "SMOKE TEST: FAIL"
+    echo "No test_prediction_seed*.csv found in $RESULT_PATH"
+    echo "Check stderr for errors."
+    echo "=========================================="
+    exit 1
+fi

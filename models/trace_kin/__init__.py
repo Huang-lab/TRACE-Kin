@@ -1,6 +1,6 @@
 """TRACE-Kin model package.
 
-Four architecture variants are exposed:
+Five architecture variants are exposed:
 
 - :class:`TraceKinV1` — the original PSICHIC architecture that produced
   the 1,847-config benchmark in ``trace_doc/kinetic_regress_benchmark.csv``.
@@ -15,11 +15,16 @@ Four architecture variants are exposed:
 - :class:`TraceKinV5T` — Vanilla Transformer + Cross-Attention.
   Alternative to v5: standard self-attention with RoPE replaces BiMamba.
   Same cross-attention and pooling as v5 for fair comparison.
+- :class:`TraceKinV6C` — Hierarchical Pocket Graph + Multi-Modal Fusion.
+  GATv2 on contact-map graph, dynamic pocket identification from
+  protein-to-ligand cross-attention, MMCAF at pocket level, hierarchical
+  pooling with gated pocket/global fusion.
 """
 
 from .net_v1 import TraceKinV1
 from .net_v4 import TraceKinV4
 from .net_v5 import TraceKinV5
 from .net_v5t import TraceKinV5T
+from .net_v6c import TraceKinV6C
 
-__all__ = ["TraceKinV1", "TraceKinV4", "TraceKinV5", "TraceKinV5T"]
+__all__ = ["TraceKinV1", "TraceKinV4", "TraceKinV5", "TraceKinV5T", "TraceKinV6C"]

@@ -41,7 +41,7 @@ from training.trainer import Trainer
 
 # All architecture variants are exposed by the package; we instantiate one
 # based on the config's ``model_version`` field.
-from models.trace_kin import TraceKinV1, TraceKinV4, TraceKinV5, TraceKinV5T
+from models.trace_kin import TraceKinV1, TraceKinV4, TraceKinV5, TraceKinV5T, TraceKinV6C
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mclassification_task", type=int, default=0)
 
     # Architecture / training behaviour switches
-    parser.add_argument("--model_version", type=str, choices=["v1", "v4", "v5", "v5t"], default=None,
+    parser.add_argument("--model_version", type=str, choices=["v1", "v4", "v5", "v5t", "v6c"], default=None,
                         help="Override config 'model_version'. Defaults to whatever the config file specifies.")
     parser.add_argument("--use_swa", action="store_true", default=False,
                         help="Enable SWA (overrides config swa.use_swa).")
@@ -727,6 +727,27 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str,
             chembert_dim=params.get("chembert_dim", 768),
             dropout=params.get("dropout", 0.1),
             input_dropout=params.get("input_dropout", 0.15),
+            regression_head=tasks["regression_task"],
+            classification_head=tasks["classification_task"],
+            multiclassification_head=tasks["mclassification_task"],
+            device=device,
+            heads=params.get("heads", 8),
+        )
+    elif version == "v6c":
+        model = TraceKinV6C(
+            mol_deg, prot_deg,
+            prot_evo_channels=params["prot_evo_channels"],
+            d_model=params.get("d_model", 512),
+            n_gat_layers=params.get("n_gat_layers", 3),
+            n_gat_heads=params.get("n_gat_heads", 8),
+            gat_rbf_dim=params.get("gat_rbf_dim", 16),
+            graph_pe_rwse_steps=params.get("graph_pe_rwse_steps", 16),
+            pocket_k=params.get("pocket_k", 64),
+            mol_in_channels=params["mol_in_channels"],
+            n_drug_pna_layers=params.get("n_drug_pna_layers", 3),
+            n_cross_heads=params.get("n_cross_heads", 8),
+            chembert_dim=params.get("chembert_dim", 768),
+            dropout=params.get("dropout", 0.1),
             regression_head=tasks["regression_task"],
             classification_head=tasks["classification_task"],
             multiclassification_head=tasks["mclassification_task"],
