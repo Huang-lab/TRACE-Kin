@@ -228,16 +228,26 @@ class GPSLayer(nn.Module):
         K = self.global_K(x_dense).view(B, L, self.n_global_heads, self.d_k).transpose(1, 2)
         V = self.global_V(x_dense).view(B, L, self.n_global_heads, self.d_k).transpose(1, 2)
 
-        # Padding mask -> attn_mask for scaled_dot_product_attention
-        # mask: (B, L) bool, True = valid
-        attn_mask = mask.unsqueeze(1).unsqueeze(2).expand(-1, self.n_global_heads, L, -1)
-        # Flash attention: True in attn_mask means "attend", False means "mask out"
-        # But scaled_dot_product_attention uses additive mask or bool mask where
-        # True means "do NOT attend". So we invert.
-        attn_mask = ~attn_mask  # True = masked position
+        # Key padding only — keep shape (B, 1, 1, L_k) so it broadcasts to (B, H, L_q, L_k).
+        # Never materialize (B, H, L, L): that forces huge allocations when L is the
+        # batch max sequence length (multi-GB, OOM on H100).
+        # SDPA bool mask: True = position to ignore (here: padded keys).
+        key_pad = ~mask  # (B, L) True = padded residue
+        key_pad = key_pad.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, L)
 
-        global_out_dense = F.scaled_dot_product_attention(
-            Q, K, V, attn_mask=attn_mask, dropout_p=self.global_dropout.p if self.training else 0.0)
+        dropout_p = self.global_dropout.p if self.training else 0.0
+        chunk_q = 512
+        if L <= chunk_q:
+            global_out_dense = F.scaled_dot_product_attention(
+                Q, K, V, attn_mask=key_pad, dropout_p=dropout_p)
+        else:
+            parts = []
+            for t0 in range(0, L, chunk_q):
+                t1 = min(t0 + chunk_q, L)
+                parts.append(F.scaled_dot_product_attention(
+                    Q[:, :, t0:t1, :], K, V, attn_mask=key_pad, dropout_p=dropout_p))
+            global_out_dense = torch.cat(parts, dim=2)
+
         global_out_dense = global_out_dense.transpose(1, 2).contiguous().view(B, L, D)
         global_out_dense = self.global_O(global_out_dense)
 
