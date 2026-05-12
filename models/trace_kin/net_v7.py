@@ -25,6 +25,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from torch_geometric.nn import GATv2Conv, global_add_pool
 from torch_geometric.nn.norm import GraphNorm
 from torch_geometric.utils import degree, to_dense_batch
@@ -285,7 +286,9 @@ class ProteinGPSEncoder(nn.Module):
 
         edge_attns = []
         for layer in self.layers:
-            x, edge_attn = layer(x, edge_index, edge_feat, batch)
+            x, edge_attn = grad_checkpoint(
+                layer, x, edge_index, edge_feat, batch,
+                use_reentrant=False)
             edge_attns.append(edge_attn)
 
         x = self.final_norm(x)
@@ -331,9 +334,21 @@ class MultiScalePCER(nn.Module):
         self.k_catalytic = k_catalytic
         self.k_pocket = k_pocket
 
-        self.compress_catalytic = nn.Linear(prot_evo_channels, d_model)
-        self.compress_pocket = nn.Linear(prot_evo_channels, d_model)
-        self.compress_global = nn.Linear(prot_evo_channels, d_model)
+        self.compress_catalytic = nn.Sequential(
+            nn.Linear(prot_evo_channels, d_model * 2),
+            nn.GELU(),
+            nn.Linear(d_model * 2, d_model),
+        )
+        self.compress_pocket = nn.Sequential(
+            nn.Linear(prot_evo_channels, d_model * 2),
+            nn.GELU(),
+            nn.Linear(d_model * 2, d_model),
+        )
+        self.compress_global = nn.Sequential(
+            nn.Linear(prot_evo_channels, d_model * 2),
+            nn.GELU(),
+            nn.Linear(d_model * 2, d_model),
+        )
 
         self.scale_gate = nn.Sequential(
             nn.Linear(d_model * 3, d_model),
@@ -428,6 +443,8 @@ class TraceKinV7(nn.Module):
         pcer_k_pocket: int = 64,
         use_mutation_gate: bool = True,
         use_graph_transformer: bool = True,
+        n_pred_heads: int = 3,
+        emb_recon_weight: float = 0.1,
         mol_in_channels: int = 43,
         n_drug_pna_layers: int = 3,
         n_cross_heads: int = 8,
@@ -473,6 +490,8 @@ class TraceKinV7(nn.Module):
         self.multiclassification_head = multiclassification_head
         self.device = device
         self.learnable_aux_loss = False
+        self._n_pred_heads = n_pred_heads
+        self.emb_recon_weight = emb_recon_weight
 
         # =====================================================================
         # STRUCTURE STREAM (d=512)
@@ -512,6 +531,9 @@ class TraceKinV7(nn.Module):
             prot_evo_channels, d_model,
             k_catalytic=pcer_k_catalytic, k_pocket=pcer_k_pocket)
 
+        # Auxiliary: embedding reconstruction decoder (forces PCER to preserve info)
+        self.emb_decoder = nn.Linear(d_model, prot_evo_channels)
+
         # =====================================================================
         # LIGAND ENCODER
         # =====================================================================
@@ -524,12 +546,15 @@ class TraceKinV7(nn.Module):
             nn.Linear(d_model, d_model // 4), nn.ReLU(), nn.Linear(d_model // 4, 1))
 
         # =====================================================================
-        # PREDICTION HEAD
+        # PREDICTION HEAD (ensemble of n_pred_heads for variance reduction)
         # =====================================================================
         # feat = struct_pool (d_model) + pcer_pool (d_model) + lig_pool (d_model)
         feat_dim = d_model * 3
         if regression_head:
-            self.reg_out = MLP([feat_dim, d_model, d_model // 2, 1])
+            self.reg_heads = nn.ModuleList([
+                MLP([feat_dim, d_model, d_model // 2, 1])
+                for _ in range(self._n_pred_heads)
+            ])
         if classification_head:
             self.cls_out = MLP([feat_dim, d_model, 2])
         if multiclassification_head:
@@ -661,13 +686,19 @@ class TraceKinV7(nn.Module):
 
         pcer_pool, scale_weights = self.pcer(raw_dense, pcer_score, prot_mask)
 
+        # Auxiliary embedding reconstruction loss: PCER pool -> reconstruct
+        # the mean-pooled raw embedding (forces information preservation)
+        emb_recon_target = (raw_dense * prot_mask.unsqueeze(-1).float()).sum(1) / prot_mask.sum(1, keepdim=True).float()
+        emb_recon_pred = self.emb_decoder(pcer_pool)
+        emb_recon_loss = self.emb_recon_weight * F.mse_loss(emb_recon_pred, emb_recon_target.detach())
+
         # =================================================================
         # PREDICTION
         # =================================================================
         feat = torch.cat([mol_pool, struct_pool, pcer_pool], dim=-1)
 
         if self.regression_head:
-            reg_pred = self.reg_out(feat)
+            reg_pred = torch.stack([h(feat) for h in self.reg_heads]).mean(0)
         if self.classification_head:
             cls_pred = self.cls_out(feat)
         if self.multiclassification_head:
@@ -708,7 +739,7 @@ class TraceKinV7(nn.Module):
             'protein_residue_index': prot_batch,
         }
 
-        return reg_pred, cls_pred, mcls_pred, zero_loss, zero_loss, zero_loss, attention_dict
+        return reg_pred, cls_pred, mcls_pred, emb_recon_loss, zero_loss, zero_loss, attention_dict
 
     def temperature_clamp(self):
         pass
