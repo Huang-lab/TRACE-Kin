@@ -1,6 +1,6 @@
 """TRACE-Kin model package.
 
-Five architecture variants are exposed:
+Six architecture variants are exposed:
 
 - :class:`TraceKinV1` — the original PSICHIC architecture that produced
   the 1,847-config benchmark in ``trace_doc/kinetic_regress_benchmark.csv``.
@@ -19,6 +19,10 @@ Five architecture variants are exposed:
   GATv2 on contact-map graph, dynamic pocket identification from
   protein-to-ligand cross-attention, MMCAF at pocket level, hierarchical
   pooling with gated pocket/global fusion.
+- :class:`TraceKinV7` — Structure-Guided Embedding Distillation (SGED).
+  Dual-stream: GATv2 structure stream for pocket identification +
+  Multi-Scale PCER over raw 4096-d PLM embeddings with Mutation-Aware
+  Gating. Decouples structural reasoning from embedding aggregation.
 """
 
 from .net_v1 import TraceKinV1
@@ -26,5 +30,6 @@ from .net_v4 import TraceKinV4
 from .net_v5 import TraceKinV5
 from .net_v5t import TraceKinV5T
 from .net_v6c import TraceKinV6C
+from .net_v7 import TraceKinV7
 
-__all__ = ["TraceKinV1", "TraceKinV4", "TraceKinV5", "TraceKinV5T", "TraceKinV6C"]
+__all__ = ["TraceKinV1", "TraceKinV4", "TraceKinV5", "TraceKinV5T", "TraceKinV6C", "TraceKinV7"]
