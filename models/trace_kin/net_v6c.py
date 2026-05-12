@@ -286,6 +286,10 @@ class TraceKinV6C(nn.Module):
             d_model, n_layers=n_gat_layers, n_heads=n_gat_heads,
             rbf_dim=gat_rbf_dim, dropout=dropout)
 
+        # --- Embedding bypass: preserve full 4096-d for RF-like pooling ---
+        self.bypass_norm = nn.LayerNorm(prot_evo_channels)
+        self.bypass_compress = nn.Linear(prot_evo_channels, d_model)
+
         # --- Ligand encoder ---
         self.drug_encoder = DrugPNAEncoder(
             mol_in_channels, d_model, mol_deg,
@@ -310,13 +314,15 @@ class TraceKinV6C(nn.Module):
         self.pocket_gate = nn.Sequential(
             nn.Linear(d_model * 2, d_model), nn.ReLU(), nn.Linear(d_model, 1), nn.Sigmoid())
 
-        # --- Task heads ---
+        # --- Task heads (wider to accommodate bypass features) ---
+        # feat_dim = d_model (ligand) + d_model (prot_struct) + d_model (bypass)
+        feat_dim = d_model * 3
         if regression_head:
-            self.reg_out = MLP([d_model * 2, d_model, 1])
+            self.reg_out = MLP([feat_dim, d_model, d_model // 2, 1])
         if classification_head:
-            self.cls_out = MLP([d_model * 2, d_model, 2])
+            self.cls_out = MLP([feat_dim, d_model, 2])
         if multiclassification_head:
-            self.mcls_out = MLP([d_model * 2, d_model, multiclassification_head])
+            self.mcls_out = MLP([feat_dim, d_model, multiclassification_head])
 
     def reset_parameters(self):
         for module in self.modules():
@@ -354,12 +360,16 @@ class TraceKinV6C(nn.Module):
         zero_loss = residue_evo_x.new_zeros(())
 
         # === Protein: project + graph PE + GATv2 on contact map ===
-        prot_h = self.prot_proj_norm(self.prot_proj(residue_evo_x.float()))
+        raw_evo = residue_evo_x.float()
+        prot_h = self.prot_proj_norm(self.prot_proj(raw_evo))
         graph_pe = self.graph_pe(residue_edge_index, num_nodes=prot_h.size(0))
         prot_h = prot_h + graph_pe
 
         prot_h, gat_edge_attns = self.prot_gat(
             prot_h, residue_edge_index, residue_edge_weight)
+
+        # === Embedding bypass: keep raw 4096-d for later pooling ===
+        raw_bypass = self.bypass_norm(raw_evo)
 
         # === Ligand: PNA + MoLFormer ===
         atom_h, _ = self.drug_encoder(mol_x, mol_x_feat, bond_x, atom_edge_index, mol_batch)
@@ -373,6 +383,7 @@ class TraceKinV6C(nn.Module):
         # === Dense batching for cross-attention ===
         prot_h_dense, prot_mask = to_dense_batch(prot_h, prot_batch)
         atom_h_dense, atom_mask = to_dense_batch(atom_h, mol_batch)
+        raw_bypass_dense, _ = to_dense_batch(raw_bypass, prot_batch)
 
         B, L_prot, D = prot_h_dense.shape
         _, L_lig, _ = atom_h_dense.shape
@@ -394,8 +405,6 @@ class TraceKinV6C(nn.Module):
         pocket_mask = pocket_mask & prot_mask
 
         # Extract pocket residue features
-        pocket_features = prot_h_dense * pocket_mask.unsqueeze(-1).float()
-        # Create a dense (B, K, D) tensor of pocket residues
         pocket_dense = torch.gather(
             prot_h_dense, 1,
             pocket_idx.unsqueeze(-1).expand(-1, -1, D))
@@ -427,8 +436,16 @@ class TraceKinV6C(nn.Module):
         mol_pool, lig_w = self._pool_dense(
             lig_attended, atom_mask, self.mol_pool_mlp)
 
+        # === Embedding bypass: pool raw 4096-d using pocket-informed weights ===
+        # Use the same pocket_score as soft attention over ALL residues (not just top-K)
+        # This gives RF-like full-dim access with learned structural focus
+        bypass_logits = pocket_score.masked_fill(~prot_mask, float('-inf'))
+        bypass_w = F.softmax(bypass_logits, dim=-1)  # (B, L_prot)
+        raw_pool = (raw_bypass_dense * bypass_w.unsqueeze(-1)).sum(1)  # (B, 4096)
+        bypass_pool = self.bypass_compress(raw_pool)  # (B, d_model)
+
         # === Prediction ===
-        feat = torch.cat([mol_pool, prot_pool], dim=-1)
+        feat = torch.cat([mol_pool, prot_pool, bypass_pool], dim=-1)
 
         if self.regression_head:
             reg_pred = self.reg_out(feat)
