@@ -37,8 +37,8 @@ from .layers import MLP
 def _rbf(D: torch.Tensor, D_min: float = 0., D_max: float = 1.,
          D_count: int = 16, device: str = 'cpu') -> torch.Tensor:
     """Radial basis function embedding of scalar distances."""
-    D = torch.where(D < D_max, D, torch.tensor(D_max, dtype=torch.float, device=device))
-    D_mu = torch.linspace(D_min, D_max, D_count, device=device).view(1, -1)
+    D = D.float().clamp(max=D_max)
+    D_mu = torch.linspace(D_min, D_max, D_count, device=D.device).view(1, -1)
     D_sigma = (D_max - D_min) / D_count
     return torch.exp(-((D.unsqueeze(-1) - D_mu) / D_sigma) ** 2)
 
