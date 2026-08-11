@@ -366,61 +366,90 @@ def extract_pdb_seq(protein_path):
         
     return seq, chain_str
 
-
-def protein_init_with_embedding(seqs, seq2feat):
-    """
-    使用预先算好的 protein_features 替换 ESM2 的 token embedding，
-    但仍然用 ESM2 的 contact head 计算 contact map。
-
-    参数
-    ----
-    seqs : list[str]
-        蛋白质序列列表（和 CSV 中 'Protein' 列一致）
-    seq2feat : dict[str -> np.ndarray 或 list]
-        映射：Protein 序列字符串 -> 对应的 sequence-level embedding，shape 类似 (1280,)
-    """
+def protein_init_with_embedding(seqs,
+                                seq2feat = None,
+                                contact_source: str = "esm2",
+                                embedding_source: str = "parquet",
+                                esmc_ckpt: str | None = None,
+                                esmc_model_name: str = "biohub/ESMC-6B",
+                                device: str = "cuda:0"):
+    """... contact_source 决定用 ESM2 还是训练好的 ESMC ContactHead ..."""
+    
     result_dict = {}
-    model_location = "esm2_t33_650M_UR50D"
-    model, alphabet = esm.pretrained.load_model_and_alphabet(model_location)
-    model.eval()
-    if torch.cuda.is_available():
-        model = model.cuda()
-    batch_converter = alphabet.get_batch_converter()
+
+    # ── NEW: validate the two axes up front ──
+    if embedding_source not in ("parquet", "esmc"):
+        raise ValueError(f"Unknown embedding_source: {embedding_source!r}")
+    if contact_source not in ("esm2", "esmc"):
+        raise ValueError(f"Unknown contact_source: {contact_source!r}")
+    if embedding_source == "parquet" and seq2feat is None:
+        raise ValueError("embedding_source='parquet' requires seq2feat.")
+
+    need_esmc = (contact_source == "esmc") or (embedding_source == "esmc")
+    need_esm2 = (contact_source == "esm2")
+
+    esm2_model = batch_converter = esmc_predictor = None
+
+    if need_esmc:                                    # ← was `if contact_source == "esmc"`
+        if not esmc_ckpt:
+            raise ValueError("ESMC path requires esmc_ckpt (path to the trained ContactHead).")
+        from training.esmc_contact import ESMCContactPredictor
+        esmc_predictor = ESMCContactPredictor(
+            model_name=esmc_model_name, head_ckpt=esmc_ckpt, device=device)
+
+    if need_esm2:                                    # ← was `elif contact_source == "esm2"`
+        model_location = "esm2_t33_650M_UR50D"
+        esm2_model, alphabet = esm.pretrained.load_model_and_alphabet(model_location)
+        esm2_model.eval()
+        if torch.cuda.is_available():
+            esm2_model = esm2_model.cuda()
+        batch_converter = alphabet.get_batch_converter()
+
+    if need_esmc and need_esm2:                      # ← NEW warning
+        print("WARNING: embedding_source='esmc' with contact_source='esm2' loads BOTH "
+              "models. Use contact_source='esmc' to get contacts from the same ESMC "
+              "pass at no extra cost.")
 
     for seq in tqdm(seqs):
-        # 1) 原来就有的：氨基酸 one-hot + 理化性质特征，保留不动
-        seq_feat = seq_feature(seq)                 # shape: (L, feat_dim)
+        # 1) AA one-hot + physchem — UNCHANGED
+        seq_feat = seq_feature(seq)
         seq_feat_tensor = torch.from_numpy(seq_feat)
 
-        # 2) 新增：从 seq2feat 里取出你预先算好的 sequence-level embedding
-        if seq not in seq2feat:
-            raise KeyError(f"在 seq2feat 中找不到该序列的 embedding，序列开头: {seq[:20]}")
-
-        feat = seq2feat[seq]   # 预先算好的 (1280,) 或类似
-        # 转成 tensor
-        feat = torch.as_tensor(feat, dtype=torch.float32)
-
-        if feat.dim() == 1:
-            # sequence-level 向量：复制成每个残基一个相同向量
-            token_repr = feat.unsqueeze(0).repeat(len(seq), 1)   # (L, d)
-        elif feat.dim() == 2:
-            # 万一你将来换成 per-residue embedding，这里也支持
-            if feat.shape[0] != len(seq):
+        # 2) node features
+        esmc_prob = None            # free byproduct when ESMC supplies the embedding
+        if embedding_source == "esmc":
+            emb, esmc_prob = esmc_predictor.encode(seq)        # ONE pass -> (L,d), (L,L)
+            if emb.shape[0] != len(seq):
                 raise ValueError(
-                    f"protein_features 第一维 {feat.shape[0]} != 序列长度 {len(seq)}，序列开头: {seq[:20]}"
-                )
-            token_repr = feat
+                    f"ESMC embedding length {emb.shape[0]} != sequence length {len(seq)}, "
+                    f"序列开头: {seq[:20]}")
+            token_repr = emb
         else:
-            raise ValueError(f"protein_features 维度只能是 1D 或 2D，目前是 {feat.dim()}D")
+            # ── original parquet path, unchanged ──
+            if seq not in seq2feat:
+                raise KeyError(f"在 seq2feat 中找不到该序列的 embedding，序列开头: {seq[:20]}")
+            feat = torch.as_tensor(seq2feat[seq], dtype=torch.float32)
+            if feat.dim() == 1:
+                token_repr = feat.unsqueeze(0).repeat(len(seq), 1)
+            elif feat.dim() == 2:
+                if feat.shape[0] != len(seq):
+                    raise ValueError(
+                        f"protein_features 第一维 {feat.shape[0]} != 序列长度 {len(seq)}，"
+                        f"序列开头: {seq[:20]}")
+                token_repr = feat
+            else:
+                raise ValueError(f"protein_features 维度只能是 1D 或 2D，目前是 {feat.dim()}D")
 
-        # 节省显存，可以转半精度
         token_repr = token_repr.half()
 
-        # 3) 保留原来的：用 ESM2 算 contact map（但不再用它的 token embedding）
-        _, contact_map_proba, _ = esm_extract(
-            model, batch_converter, seq,
-            layer=33, approach='last', dim=1280
-        )
+        # 3) Contact map：ESM2 contact head 或训练好的 ESMC ContactHead
+        if contact_source == "esmc":
+            contact_map_proba = esmc_prob if esmc_prob is not None else esmc_predictor.predict(seq)          # (L, L) on CPU
+        else:
+            _, contact_map_proba, _ = esm_extract(
+                esm2_model, batch_converter, seq,
+                layer=33, approach='last', dim=1280
+            )
 
         assert len(contact_map_proba) == len(seq)
         edge_index, edge_weight = contact_map(contact_map_proba)
@@ -435,5 +464,9 @@ def protein_init_with_embedding(seqs, seq2feat):
             'edge_index': edge_index,
             'edge_weight': edge_weight,
         }
+
+    del esmc_predictor, esm2_model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return result_dict

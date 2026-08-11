@@ -1,0 +1,45 @@
+# TRACE-Kin — core Python dependencies.
+#
+# Derived from the actual imports across models/, training/, inference/,
+# analysis/ and figures/ — not from `conda env export` (which dumps the full
+# resolved tree, build strings and host system libraries).
+#
+# IMPORTANT: torch and the PyTorch Geometric stack are deliberately NOT listed
+# here. torch_scatter / torch_sparse are compiled C++/CUDA extensions that must
+# be installed from a wheel index matching your exact torch + CUDA build, which
+# a plain requirements file cannot express. Install those FIRST — see INSTALL.md.
+#
+#   pip install -r requirements.txt      # after the torch/PyG step
+
+# --- protein & ligand featurization ---------------------------------------
+fair-esm>=2.0.0            # ESM2 contact head. NOTE: imported at module load in
+                           # protein_init_with_embedding.py, so it is required even
+                           # when running the pure-ESMC path. See INSTALL.md for the
+                           # `esm` module-name collision with EvolutionaryScale's
+                           # `esm` package (they cannot coexist).
+transformers>=4.40.0       # ESMC contact head, MoLFormer-XL ligand embeddings
+accelerate>=0.26.0         # REQUIRED: esmc_contact.py passes device_map= to
+                           # from_pretrained, and transformers needs accelerate for
+                           # any device_map (also for sharded 6B checkpoints).
+rdkit>=2023.3.1            # SMILES -> molecular graph + clique tree
+biopython>=1.81            # Bio.PDB structure parsing
+# safetensors + huggingface_hub arrive transitively with transformers and are
+# what load the sharded ESMC-6B checkpoint; no need to pin them separately.
+
+# --- data & numerics -------------------------------------------------------
+numpy>=1.24                # see INSTALL.md: fair-esm can break under numpy>=2
+pandas>=2.0
+pyarrow>=14.0              # parquet engine for the train/val/test splits
+scipy>=1.10
+scikit-learn>=1.3
+
+# --- training / analysis utilities ----------------------------------------
+tqdm>=4.65
+reprint>=0.6               # trainer's in-place console output
+lifelines>=0.27            # concordance index in analysis/ + inference/confidence
+matplotlib>=3.7            # figures/generate_figures.py
+
+# --- optional: v6b side experiment (XGBoost/LightGBM on v5t deep features) --
+# Uncomment only if you run training/v6b_xgboost_on_v5t_features.py
+# xgboost>=2.0
+# lightgbm>=4.0

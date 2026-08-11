@@ -67,6 +67,37 @@ TRACE_Kin_Results_v2/
 submitted_jobs.txt
 data/benchmark/_smoke/
 
+# --- Current result tree ---------------------------------------------------
+# The SLURM launchers default RESULT_PATH to "$REPO/results/...", i.e. INSIDE
+# the repo, so the whole run output would otherwise be staged. The
+# TRACE_Kin_Results*/ patterns above only match the older naming.
+# Covers: save_model_seed*/, test_prediction_seed*.csv, full_result-*.txt and
+# the interpretation_result_seed*/PAIR_*/ trees.
+results/
+
+# --- Per-pair interpretation output (wherever it is written) ---------------
+# virtual_screening(save_interpret=True) writes ONE DIRECTORY PER PAIR, each
+# containing protein.csv / ligand.csv / fingerprint.npy. That is thousands of
+# tiny files for a normal test split — it exhausts inode quota on HPC and must
+# never enter git. Regenerate on demand with
+# `python inference/predict.py --interpret_dir <dir>`.
+interpretation_result_seed*/
+**/PAIR_*/
+
+# --- NumPy artifacts -------------------------------------------------------
+# fingerprint.npy (per-pair interaction fingerprints, data_utils.py) and
+# v5t_features.npz (extracted deep features, v6b_xgboost_on_v5t_features.py).
+*.npy
+*.npz
+
+# --- Dataset splits / feature tables --------------------------------------
+# Datasets live outside the repo ($dir_path/kinetic_dataset/...). This is a
+# guard in case a datafolder is ever placed inside the tree; the protein.pt /
+# ligand.pt / molformer_emb.pt caches beside them are already covered by *.pt.
+# NOTE: deliberately NOT ignoring *.csv — trace_doc/kinetic_regress_benchmark.csv
+# and data/benchmark/*.csv are tracked ground truth.
+*.parquet
+
 # =============================================================================
 # Explicitly tracked artifacts (DO commit these — listed for reviewer clarity):
 #   - data/benchmark/kinetic_regress_benchmark_clean.csv

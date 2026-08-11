@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
                              "When set, molecular embeddings are computed via live "
                              "MoLFormer inference and cached to <datafolder>/molformer_emb.pt, "
                              "replacing the parquet metabolite_features column.")
-
+    
     # Cross-dataset pooling for v2 catalytic kinetics. Each entry is the path
     # to an additional dataset folder whose train.{parquet,csv} is appended to
     # the primary training set. Test/val always come from --datafolder only.
@@ -110,6 +110,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force_rebuild", action="store_true", default=False,
                         help="Always regenerate protein.pt and ligand.pt instead of reusing the cache.")
 
+    parser.add_argument("--ensemble_size", type=int, default=1,
+                        help="Train N models in one invocation with seeds "
+                             "--seed, --seed+1, ... N-1. Preprocessing, DataLoaders and "
+                             "PNA degree stats are built once and shared, so the cost is "
+                             "N trainings, not N full runs. Members land in "
+                             "save_model_seed<seed>/ and are averaged by "
+                             "inference/predict_ensemble.py.")
+
+    parser.add_argument("--preprocess_only", action="store_true", default=False,
+                        help="Build protein.pt / ligand.pt / degree.pt and exit before training. "
+                             "Use this once before launching a multi-seed ensemble array so the "
+                             "seeds share a warm cache instead of racing to build it.")
+
     # Optional pretrained warm start
     parser.add_argument("--trained_model_path", type=str, default="")
     parser.add_argument("--finetune_modules", type=str, default=None)
@@ -120,8 +133,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample_valid", type=int, default=None)
 
     parser.add_argument("--save_interpret", action="store_true", default=True)
-    parser.add_argument("--sampling_col", type=str, default="")
 
+    parser.add_argument("--no_save_interpret", dest="save_interpret", action="store_false",
+                        help="Skip the per-pair interpretation directories (one PAIR_*/ per test "
+                             "pair, each with protein.csv / ligand.csv / fingerprint.npy). Those "
+                             "are thousands of small files and exhaust disk/inode quota; the test "
+                             "prediction CSV is still written. Needed because --save_interpret is "
+                             "store_true with default=True and so cannot otherwise be disabled.")
+
+    parser.add_argument("--sampling_col", type=str, default="")
+    
+    parser.add_argument("--contact_source", type=str, choices=["esm2", "esmc"], 
+                        default="esm2"
+                       )
+
+    # Node-feature source
+    parser.add_argument("--embedding_source", type=str, choices=["parquet", "esmc"],
+                        default="parquet",
+                        help="Where per-residue node features come from. 'parquet' reads "
+                             "--feature_col (default, existing behavior). 'esmc' extracts "
+                             "per-residue embeddings from the same ESMC forward pass that "
+                             "computes contacts — requires --esmc_contact_ckpt.")
+
+
+    parser.add_argument("--esmc_contact_ckpt", type=str, default=None )
+    
+    parser.add_argument("--esmc_model_name", type=str, default="biohub/ESMC-6B")
+        
+                         
+
+                        
+                        
     return parser.parse_args()
 
 
@@ -391,7 +433,17 @@ def load_split_dataframes(args) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
         print(f"Pooled training set: {before} -> {len(train_df)} rows from {len(pool_train_paths)} extra dataset(s).")
 
     # --- Dim detection from 1-row samples ------------------------------------
-    embedding_dim = detect_dim_from_parquet(train_path, args.feature_col)
+    # --- Dim detection from 1-row samples ------------------------------------
+    if args.embedding_source == "esmc":                          # ← NEW branch
+        # Node features come from the ESMC forward pass, not --feature_col.
+        # The real dim is read from protein.pt after preprocess() (Edit 3).
+        embedding_dim = -1
+        print("embedding_source=esmc: skipping parquet dim detection "
+              "(prot_evo_channels will be set from protein.pt)")
+    else:
+        embedding_dim = detect_dim_from_parquet(train_path, args.feature_col)
+        print(f"Detected prot_evo_channels = {embedding_dim} (1-row sample)")
+
     print(f"Detected prot_evo_channels = {embedding_dim} (1-row sample)")
     if args.molformer_path:
         chembert_dim = 768  # MoLFormer-XL hidden size; doesn't need parquet read
@@ -498,6 +550,10 @@ def preprocess(args, paths: dict, proteins: list[str], ligands: list[str],
     extra CPU RAM = just protein.pt size (~21 GB at MutaPLM). With cache
     miss, peak ≈ 2× protein.pt size briefly during the protein_init
     build (~42 GB), then drops to ~21 GB after seq2feat is freed.
+
+     When ``args.embedding_source == "esmc"``, seq2feat is skipped entirely —
+    per-residue node features come from the ESMC forward pass that also
+    produces the contact map, so the parquet feature column is never read.
     """
     folder = args.datafolder
     force_rebuild = args.force_rebuild
@@ -509,21 +565,35 @@ def preprocess(args, paths: dict, proteins: list[str], ligands: list[str],
         print(f"Reusing protein cache: {protein_path}")
         protein_dict = torch.load(protein_path)
     else:
-        print("Cache miss — loading seq2feat (transient) to build protein.pt...")
-        seq2feat = _build_seq2feat_lazy(args, paths)
-        print(f"  seq2feat: {len(seq2feat)} unique sequences (transient)")
-        # Validate before consuming.
-        missing = [s for s in proteins if s not in seq2feat]
-        if missing:
-            raise ValueError(
-                f"{len(missing)} sequences are missing protein_features "
-                f"(e.g. {missing[:3]!r}). Check the parquet's {args.feature_col} column."
-            )
-        protein_dict = protein_init_with_embedding(proteins, seq2feat=seq2feat)
+        if args.embedding_source == 'esmc':
+            seq2feat = None
+            print("Cache miss  -- building protein.pt (embedding_source = esmc :"
+                  "per residue features + contacts from one  ESMC pass; seq2feat skipped)")
+        else:
+            
+            print("Cache miss — loading seq2feat (transient) to build protein.pt...")
+            seq2feat = _build_seq2feat_lazy(args, paths)
+            print(f"  seq2feat: {len(seq2feat)} unique sequences (transient)")
+            # Validate before consuming.
+            missing = [s for s in proteins if s not in seq2feat]
+            if missing:
+                raise ValueError(
+                    f"{len(missing)} sequences are missing protein_features "
+                    f"(e.g. {missing[:3]!r}). Check the parquet's {args.feature_col} column."
+                )
+        protein_dict = protein_init_with_embedding(
+            proteins, seq2feat = seq2feat,
+            contact_source = args.contact_source,
+            embedding_source = args.embedding_source,
+            esmc_ckpt = (args.esmc_contact_ckpt or None),
+            esmc_model_name = args.esmc_model_name,
+            device = args.device,
+        )
+        
         torch.save(protein_dict, protein_path)
         del seq2feat
         import gc; gc.collect()
-        print(f"Saved protein cache: {protein_path}; freed seq2feat.")
+        print(f"Saved protein cache: {protein_path}")
 
     # === aa_typical (v4 only) ===
     aa_typical_buffers = None
@@ -788,6 +858,123 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str,
     model = model.to(device)
     model.reset_parameters()
     return model, version
+# ---------------------------------------------------------------------------
+# One ensemble member
+# ---------------------------------------------------------------------------
+def train_one_member(args, model_config, swa_block, device, seed,
+                     mol_deg, prot_deg, degree_dict, aa_typical_buffers,
+                     train_loader, val_loader, test_loader, test_df, ligand_dict):
+    """Build, train and evaluate a single model, keyed by ``seed``.
+
+    Everything upstream (caches, DataLoaders, degree stats) is built once by
+    main() and shared, so an N-member ensemble costs N trainings — not N
+    preprocessing runs. Artifacts are written per seed:
+    ``save_model_seed<seed>/`` and ``test_prediction_seed<seed>.csv``.
+    """
+    # 6. Build model + dump config beside the checkpoint for reproducibility.
+    os.makedirs(args.result_path, exist_ok=True)
+    model_dir = os.path.join(args.result_path, f"save_model_seed{seed}")
+    os.makedirs(model_dir, exist_ok=True)
+    torch.save(degree_dict, os.path.join(model_dir, "degree.pt"))
+
+    model, model_version = build_model(
+        model_config, mol_deg, prot_deg, args.device,
+        aa_typical_buffers=aa_typical_buffers,
+    )
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Built TraceKin{model_version.upper()} with {n_params:,} parameters")
+
+    if args.trained_model_path:
+        param_path = os.path.join(args.trained_model_path, "model.pt")
+        state = torch.load(param_path, map_location=device)
+        model.load_state_dict(state, strict=False)
+        print(f"Loaded pretrained weights from {param_path}")
+
+    with open(os.path.join(model_dir, "config.json"), "w") as f:
+        json.dump(model_config, f, indent=2)
+
+    # 7. Determine evaluation metric.
+    if model_config["tasks"]["regression_task"]:
+        evaluate_metric = "rmse"
+    elif model_config["tasks"]["classification_task"]:
+        evaluate_metric = "roc"
+    elif model_config["tasks"]["mclassification_task"]:
+        evaluate_metric = "macro_f1"
+    else:
+        raise ValueError("No task selected (--regression_task / --classification_task / --mclassification_task).")
+
+    # 8. Trainer.
+    finetune_modules = ast.literal_eval(args.finetune_modules) if args.finetune_modules else None
+    engine = Trainer(
+        model=model,
+        lrate=model_config["optimizer"]["lrate"],
+        min_lrate=model_config["optimizer"]["min_lrate"],
+        wdecay=model_config["optimizer"]["weight_decay"],
+        betas=tuple(model_config["optimizer"]["betas"]),
+        eps=model_config["optimizer"]["eps"],
+        amsgrad=model_config["optimizer"]["amsgrad"],
+        clip=model_config["optimizer"]["clip"],
+        steps_per_epoch=len(train_loader),
+        num_epochs=args.epochs,
+        total_iters=None,
+        warmup_iters=model_config["optimizer"]["warmup_iters"],
+        lr_decay_iters=model_config["optimizer"]["lr_decay_iters"],
+        schedule_lr=model_config["optimizer"]["schedule_lr"],
+        regression_weight=1,
+        classification_weight=1,
+        evaluate_metric=evaluate_metric,
+        result_path=args.result_path,
+        runid=seed,
+        finetune_modules=finetune_modules,
+        device=device,
+        patience=model_config["optimizer"].get("patience", 0),
+        use_swa=swa_block["use_swa"],
+        swa_start_frac=swa_block.get("swa_start_frac", 0.75),
+        swa_lr_factor=swa_block.get("swa_lr_factor", 0.1),
+        use_amp=args.amp,
+    )
+
+    # 9. Train.
+    engine.train_epoch(
+        train_loader,
+        val_loader=val_loader,
+        test_loader=test_loader,
+        evaluate_epoch=args.evaluate_epoch,
+    )
+
+    # 10. Final evaluation on test set with the best checkpoint.
+    best_checkpoint = os.path.join(model_dir, "model.pt")
+    model.load_state_dict(torch.load(best_checkpoint, map_location=device))
+    interpret_path = os.path.join(args.result_path, f"interpretation_result_seed{seed}")
+    os.makedirs(interpret_path, exist_ok=True)
+    # virtual_screening mutates the frame it is handed (adds ID + prediction
+    # columns), so each member gets its own copy.
+    screen_df = virtual_screening(
+        test_df.copy(), model, test_loader,
+        result_path=interpret_path, save_interpret=args.save_interpret,
+        ligand_dict=ligand_dict, device=device,
+    )
+    pred_csv = os.path.join(args.result_path, f"test_prediction_seed{seed}.csv")
+    screen_df.to_csv(pred_csv, index=False)
+
+    rmse = None
+    if args.regression_task and "regression_label" in screen_df and "predicted_binding_affinity" in screen_df:
+        y = screen_df["regression_label"].values.astype(float)
+        p = screen_df["predicted_binding_affinity"].values.astype(float)
+        mask = ~np.isnan(y) & ~np.isnan(p)
+        if mask.any():
+            metrics = evaluate_reg(y[mask], p[mask])
+            rmse = metrics["rmse"]
+            print(f"Final test metrics: rmse={metrics['rmse']:.4f}, pearson={metrics['pearson']:.4f}, "
+                  f"r2_proxy(mse)={metrics['mse']:.4f}")
+
+    print(f"Done. Predictions: {pred_csv}; checkpoint: {best_checkpoint}")
+
+    del model, engine
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return rmse
+
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +1032,23 @@ def main():
     )
     print_mem("after preprocess")
 
+    # ── NEW: prot_evo_channels comes from what protein.pt ACTUALLY holds. ──
+    # The parquet-based detection at step 2 is only a guess: features may come
+    # from ESMC (embedding_source='esmc') or from a hand-precomputed cache, in
+    # which case --feature_col never described the real node features.
+    if not protein_dict:
+        raise ValueError("preprocess() returned an empty protein_dict.")
+    _sample = next(iter(protein_dict.values()))["token_representation"]
+    _true_dim = int(_sample.shape[-1])
+    if _true_dim != model_config["params"]["prot_evo_channels"]:
+        print(f"WARNING: parquet-detected prot_evo_channels="
+              f"{model_config['params']['prot_evo_channels']} != protein.pt dim {_true_dim}. "
+              f"Using {_true_dim}. If you did NOT intend this, you are probably reusing a "
+              f"stale protein.pt built with a different embedding — rebuild the cache.")
+    model_config["params"]["prot_evo_channels"] = _true_dim
+    print(f"prot_evo_channels = {_true_dim} (from protein.pt, "
+          f"per-residue={_sample.shape[0] > 1})")
+
     # 4. Build DataLoaders (with row filtering).
     train_loader, test_loader, val_loader, train_df, test_df, val_df = make_loaders(
         train_df, test_df, val_df, ligand_dict, protein_dict,
@@ -866,100 +1070,42 @@ def main():
     mol_deg = degree_dict["ligand_deg"]
     prot_deg = degree_dict["protein_deg"]
 
-    # 6. Build model + dump config beside the checkpoint for reproducibility.
-    os.makedirs(args.result_path, exist_ok=True)
-    model_dir = os.path.join(args.result_path, f"save_model_seed{args.seed}")
-    os.makedirs(model_dir, exist_ok=True)
-    torch.save(degree_dict, os.path.join(model_dir, "degree.pt"))
+    # 6-10. Train each ensemble member. Seeds are args.seed, args.seed+1, ...
+    #       so every member is independently reproducible (CatPred/Chemprop
+    #       instead rely on the global RNG advancing between members, which
+    #       gives diversity but no per-member reproducibility).
+    seeds = [args.seed + i for i in range(max(1, args.ensemble_size))]
+    if len(seeds) > 1:
+        print("=" * 60)
+        print(f"Ensemble training: {len(seeds)} members, seeds {seeds}")
+        print("Caches, DataLoaders and degree stats are shared across members.")
+        print("=" * 60)
 
-    model, model_version = build_model(
-        model_config, mol_deg, prot_deg, args.device,
-        aa_typical_buffers=aa_typical_buffers,
-    )
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"Built TraceKin{model_version.upper()} with {n_params:,} parameters")
+    member_rmse = []
+    for i, seed in enumerate(seeds):
+        if len(seeds) > 1:
+            print(f"\n----- member {i + 1}/{len(seeds)} (seed {seed}) -----")
+        set_random_seed(seed)
+        rmse = train_one_member(
+            args, model_config, swa_block, device, seed,
+            mol_deg, prot_deg, degree_dict, aa_typical_buffers,
+            train_loader, val_loader, test_loader, test_df, ligand_dict,
+        )
+        member_rmse.append(rmse)
 
-    if args.trained_model_path:
-        param_path = os.path.join(args.trained_model_path, "model.pt")
-        state = torch.load(param_path, map_location=device)
-        model.load_state_dict(state, strict=False)
-        print(f"Loaded pretrained weights from {param_path}")
-
-    with open(os.path.join(model_dir, "config.json"), "w") as f:
-        json.dump(model_config, f, indent=2)
-
-    # 7. Determine evaluation metric.
-    if model_config["tasks"]["regression_task"]:
-        evaluate_metric = "rmse"
-    elif model_config["tasks"]["classification_task"]:
-        evaluate_metric = "roc"
-    elif model_config["tasks"]["mclassification_task"]:
-        evaluate_metric = "macro_f1"
-    else:
-        raise ValueError("No task selected (--regression_task / --classification_task / --mclassification_task).")
-
-    # 8. Trainer.
-    finetune_modules = ast.literal_eval(args.finetune_modules) if args.finetune_modules else None
-    engine = Trainer(
-        model=model,
-        lrate=model_config["optimizer"]["lrate"],
-        min_lrate=model_config["optimizer"]["min_lrate"],
-        wdecay=model_config["optimizer"]["weight_decay"],
-        betas=tuple(model_config["optimizer"]["betas"]),
-        eps=model_config["optimizer"]["eps"],
-        amsgrad=model_config["optimizer"]["amsgrad"],
-        clip=model_config["optimizer"]["clip"],
-        steps_per_epoch=len(train_loader),
-        num_epochs=args.epochs,
-        total_iters=None,
-        warmup_iters=model_config["optimizer"]["warmup_iters"],
-        lr_decay_iters=model_config["optimizer"]["lr_decay_iters"],
-        schedule_lr=model_config["optimizer"]["schedule_lr"],
-        regression_weight=1,
-        classification_weight=1,
-        evaluate_metric=evaluate_metric,
-        result_path=args.result_path,
-        runid=args.seed,
-        finetune_modules=finetune_modules,
-        device=device,
-        patience=model_config["optimizer"].get("patience", 0),
-        use_swa=swa_block["use_swa"],
-        swa_start_frac=swa_block.get("swa_start_frac", 0.75),
-        swa_lr_factor=swa_block.get("swa_lr_factor", 0.1),
-        use_amp=args.amp,
-    )
-
-    # 9. Train.
-    engine.train_epoch(
-        train_loader,
-        val_loader=val_loader,
-        test_loader=test_loader,
-        evaluate_epoch=args.evaluate_epoch,
-    )
-
-    # 10. Final evaluation on test set with the best checkpoint.
-    best_checkpoint = os.path.join(model_dir, "model.pt")
-    model.load_state_dict(torch.load(best_checkpoint, map_location=device))
-    interpret_path = os.path.join(args.result_path, f"interpretation_result_seed{args.seed}")
-    os.makedirs(interpret_path, exist_ok=True)
-    screen_df = virtual_screening(
-        test_df, model, test_loader,
-        result_path=interpret_path, save_interpret=args.save_interpret,
-        ligand_dict=ligand_dict, device=device,
-    )
-    pred_csv = os.path.join(args.result_path, f"test_prediction_seed{args.seed}.csv")
-    screen_df.to_csv(pred_csv, index=False)
-
-    if args.regression_task and "regression_label" in screen_df and "predicted_binding_affinity" in screen_df:
-        y = screen_df["regression_label"].values.astype(float)
-        p = screen_df["predicted_binding_affinity"].values.astype(float)
-        mask = ~np.isnan(y) & ~np.isnan(p)
-        if mask.any():
-            metrics = evaluate_reg(y[mask], p[mask])
-            print(f"Final test metrics: rmse={metrics['rmse']:.4f}, pearson={metrics['pearson']:.4f}, "
-                  f"r2_proxy(mse)={metrics['mse']:.4f}")
-
-    print(f"Done. Predictions: {pred_csv}; checkpoint: {best_checkpoint}")
+    if len(seeds) > 1:
+        scored = [r for r in member_rmse if r is not None]
+        print("\n" + "=" * 60)
+        print(f"Ensemble training complete: {len(seeds)} members in {args.result_path}")
+        if scored:
+            print(f"  per-member rmse: " + ", ".join(f"{r:.4f}" for r in scored))
+            print(f"  mean={np.mean(scored):.4f} best={min(scored):.4f} worst={max(scored):.4f}")
+        print("  average them with:")
+        print(f"    python inference/predict_ensemble.py \\")
+        print(f"      --weights_glob '{args.result_path}/save_model_seed*' \\")
+        print(f"      --datafolder {args.datafolder} --split test \\")
+        print(f"      --output {args.result_path}/ensemble_test.csv")
+        print("=" * 60)
 
 
 if __name__ == "__main__":
