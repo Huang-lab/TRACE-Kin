@@ -457,6 +457,12 @@ class TraceKinV7(nn.Module):
         emb_recon_weight: float = 0.1,
         mol_in_channels: int = 43,
         n_drug_pna_layers: int = 3,
+        # Ligand positional/structural encoding: "none" (v7 baseline) | "input"
+        # (RWSE added once) | "lspe" (learnable p, own PNA path). See
+        # models/trace_kin/ligand_encoder.py.
+        mol_pe_mode: str = "none",
+        mol_pe_steps: int = 8,
+        mol_pe_dim: int = 16,
         n_cross_heads: int = 8,
         chembert_dim: int = 768,
         dropout: float = 0.1,
@@ -547,9 +553,19 @@ class TraceKinV7(nn.Module):
         # =====================================================================
         # LIGAND ENCODER
         # =====================================================================
-        self.drug_encoder = DrugPNAEncoder(
-            mol_in_channels, d_model, mol_deg,
-            n_layers=n_drug_pna_layers, heads=heads, dropout=dropout)
+        self.mol_pe_mode = mol_pe_mode
+        if mol_pe_mode == "none":
+            # Baseline path — keeps the original encoder bit-identical.
+            self.drug_encoder = DrugPNAEncoder(
+                mol_in_channels, d_model, mol_deg,
+                n_layers=n_drug_pna_layers, heads=heads, dropout=dropout)
+        else:
+            from .ligand_encoder import LigandEncoder
+            self.drug_encoder = LigandEncoder(
+                mol_in_channels, d_model, mol_deg,
+                n_layers=n_drug_pna_layers, heads=heads, dropout=dropout,
+                pe_mode=mol_pe_mode, pe_steps=mol_pe_steps, pe_dim=mol_pe_dim)
+            
         self.mol_context_proj = nn.Linear(chembert_dim, d_model)
 
         self.mol_pool_mlp = nn.Sequential(
@@ -620,8 +636,12 @@ class TraceKinV7(nn.Module):
         # =================================================================
         # LIGAND ENCODER
         # =================================================================
-        atom_h, _ = self.drug_encoder(mol_x, mol_x_feat, bond_x, atom_edge_index, mol_batch)
 
+        # DrugPNAEncoder returns 2 values, LigandEncoder returns 3 (the extra one
+        # is the learnable positional tensor p, used only in lspe mode).
+        _enc = self.drug_encoder(mol_x, mol_x_feat, bond_x, atom_edge_index, mol_batch)
+        atom_h, mol_pe = (_enc[0], _enc[2]) if len(_enc) == 3 else (_enc[0], None)
+       
         if chembert_fp is not None:
             ctx = self.mol_context_proj(chembert_fp.float())
             if ctx.dim() == 3:
