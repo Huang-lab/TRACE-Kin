@@ -284,8 +284,8 @@ class MoleculeGraphDataset():
             v1 = b.GetBeginAtomIdx()
             v2 = b.GetEndAtomIdx()
             b_type = self.edge_dict[b.GetBondType()]
-            adj[v1 - 1, v2 - 1] = b_type
-            adj[v2 - 1, v1 - 1] = b_type
+            adj[v1, v2] = b_type
+            adj[v2, v1] = b_type
 
         return adj
 
