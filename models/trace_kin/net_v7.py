@@ -1,4 +1,5 @@
-"""TRACE-Kin v7: Structure-Guided Embedding Distillation (SGED).
+"""
+TRACE-Kin v7: Structure-Guided Embedding Distillation (SGED).
 
 Novel architecture that decouples structural reasoning from embedding
 aggregation through Pocket-Conditioned Embedding Readout (PCER).
@@ -30,11 +31,42 @@ from torch_geometric.nn import GATv2Conv, global_add_pool
 from torch_geometric.nn.norm import GraphNorm
 from torch_geometric.utils import degree, to_dense_batch
 from torch_geometric.utils import softmax as pyg_softmax
-from torch_scatter import scatter
-
-from .layers import MLP
 
 
+# NOTE: torch_scatter and torch_sparse are deliberately NOT imported.
+# v7 needed torch_scatter for a single sum-scatter (replaced by index_add_ below)
+# and never used torch_sparse -- it arrived only because `from .layers import MLP`
+# pulls in layers.py, which imports SparseTensor at module level.
+
+
+
+class MLP(nn.Module):
+    def __init__(self, dims, out_norm=False, in_norm=False, bias=True):
+        super().__init__()
+        self.FC_layers = nn.ModuleList(
+                [nn.Linear(dims[i - 1], dims[i], bias=bias) for i in range(1, len(dims))])
+        self.hidden_layers = len(dims) - 2
+        self.out_norm, self.in_norm = out_norm, in_norm
+        if out_norm:
+            self.out_ln = nn.LayerNorm(dims[-1])
+        if in_norm:
+            self.in_ln = nn.LayerNorm(dims[0])
+
+    def reset_parameters(self):
+        for layer in self.FC_layers:
+            layer.reset_parameters()
+        if self.out_norm:
+            self.out_ln.reset_parameters()
+        if self.in_norm:
+            self.in_ln.reset_parameters()
+            
+    def forward(self, x):
+        y = self.in_ln(x) if self.in_norm else x
+        for i in range(self.hidden_layers):
+            y = F.relu(self.FC_layers[i](y))
+        y = self.FC_layers[-1](y)
+        
+        return self.out_ln(y) if self.out_norm else y
 # ---------------------------------------------------------------------------
 # Shared building blocks
 # ---------------------------------------------------------------------------
@@ -67,7 +99,7 @@ class GraphStructuralEncoding(nn.Module):
         cur = torch.ones(num_nodes, device=edge_index.device)
         for k in range(1, self.rwse_steps):
             msg = cur[col] * deg_inv[col]
-            cur = scatter(msg, row, dim=0, dim_size=num_nodes, reduce='sum')
+            cur = torch.zeros(num_nodes, device=edge_index.device).index_add_(0, row, msg)
             rw_landing[:, k] = cur
 
         return self.proj(rw_landing)

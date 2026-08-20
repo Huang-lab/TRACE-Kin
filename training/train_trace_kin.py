@@ -41,7 +41,7 @@ from training.trainer import Trainer
 
 # All architecture variants are exposed by the package; we instantiate one
 # based on the config's ``model_version`` field.
-from models.trace_kin import TraceKinV1, TraceKinV4, TraceKinV5, TraceKinV5T, TraceKinV6C, TraceKinV7
+from models.trace_kin import TraceKinV7
 
 
 # ---------------------------------------------------------------------------

@@ -25,11 +25,6 @@ Six architecture variants are exposed:
   Gating. Decouples structural reasoning from embedding aggregation.
 """
 
-from .net_v1 import TraceKinV1
-from .net_v4 import TraceKinV4
-from .net_v5 import TraceKinV5
-from .net_v5t import TraceKinV5T
-from .net_v6c import TraceKinV6C
 from .net_v7 import TraceKinV7
 
-__all__ = ["TraceKinV1", "TraceKinV4", "TraceKinV5", "TraceKinV5T", "TraceKinV6C", "TraceKinV7"]
+__all__ = ["TraceKinV7"]
