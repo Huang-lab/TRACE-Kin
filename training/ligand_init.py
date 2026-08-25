@@ -469,7 +469,7 @@ def tree_decomposition(
 ###
 
 def smiles2graph(m_str):
-    mgd = MoleculeGraphDataset(halogen_detail=False)
+    mgd = MoleculeGraphDataset(halogen_detail=True)
     mol = Chem.MolFromSmiles(m_str)
     
     # Check if SMILES parsing failed
