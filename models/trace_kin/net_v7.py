@@ -586,14 +586,8 @@ class TraceKinV7(nn.Module):
         # LIGAND ENCODER
         # =====================================================================
         self.mol_pe_mode = mol_pe_mode
-        if mol_pe_mode == "none":
-            # Baseline path — keeps the original encoder bit-identical.
-            self.drug_encoder = DrugPNAEncoder(
-                mol_in_channels, d_model, mol_deg,
-                n_layers=n_drug_pna_layers, heads=heads, dropout=dropout)
-        else:
-            from .ligand_encoder import LigandEncoder
-            self.drug_encoder = LigandEncoder(
+        from .ligand_encoder import LigandEncoder
+        self.drug_encoder = LigandEncoder(
                 mol_in_channels, d_model, mol_deg,
                 n_layers=n_drug_pna_layers, heads=heads, dropout=dropout,
                 pe_mode=mol_pe_mode, pe_steps=mol_pe_steps, pe_dim=mol_pe_dim)
