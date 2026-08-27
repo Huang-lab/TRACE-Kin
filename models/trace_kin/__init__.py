@@ -1,6 +1,15 @@
 """TRACE-Kin model package.
 
-Six architecture variants are exposed:
+One architecture is exported: :class:`TraceKinV7`.
+
+``TraceKinV1``, ``V4``, ``V5``, ``V5T`` and ``V6C`` were deleted in dfb7ab3a
+("got rid of unused older versions"). Their configs (``training/config_v*.json``)
+and any checkpoints still exist, but the code to build them does not; recover it
+from that commit's parent if a prior number has to be reproduced. Their
+descriptions are kept below so a checkpoint or a benchmark row can still be
+matched to what produced it.
+
+Removed variants:
 
 - :class:`TraceKinV1` — the original PSICHIC architecture that produced
   the 1,847-config benchmark in ``trace_doc/kinetic_regress_benchmark.csv``.
@@ -19,7 +28,9 @@ Six architecture variants are exposed:
   GATv2 on contact-map graph, dynamic pocket identification from
   protein-to-ligand cross-attention, MMCAF at pocket level, hierarchical
   pooling with gated pocket/global fusion.
-- :class:`TraceKinV7` — Structure-Guided Embedding Distillation (SGED).
+Exported:
+
+- :class:`TraceKinV7` - Structure-Guided Embedding Distillation (SGED).
   Dual-stream: GATv2 structure stream for pocket identification +
   Multi-Scale PCER over raw 4096-d PLM embeddings with Mutation-Aware
   Gating. Decouples structural reasoning from embedding aggregation.
