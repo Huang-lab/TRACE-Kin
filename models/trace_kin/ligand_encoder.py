@@ -40,7 +40,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import global_add_pool
+from torch_geometric.nn import global_add_pool, global_mean_pool
 from torch_geometric.nn.norm import GraphNorm
 from torch_geometric.utils import softmax as pyg_softmax
 
@@ -66,7 +66,7 @@ def atom_rwse(edge_index: torch.Tensor, num_nodes: int, steps: int) -> torch.Ten
     A[edge_index[0], edge_index[1]] = 1.0
     deg = A.sum(dim=1).clamp(min=1)
     P = A / deg.unsqueeze(1)                      # row-stochastic D^-1 A
-    M = P.clone()
+    M = P @ P
     out = [M.diagonal()]
     for _ in range(steps - 1):
         M = M @ P
@@ -89,12 +89,13 @@ class LigandEncoder(nn.Module):
 
     def __init__(self, mol_in_channels: int, d_model: int, mol_deg,
                  n_layers: int = 3, heads: int = 8, dropout: float = 0.1,
-                 pe_mode: str = "none", pe_steps: int = 16, pe_dim: int = 16):
+                 pe_mode: str = "none", pe_steps: int = 16, pe_dim: int = 16, pe_fold_norm: bool = True):
         super().__init__()
         if pe_mode not in ("none", "input", "lspe"):
             raise ValueError(f"pe_mode must be none|input|lspe, got {pe_mode!r}")
         self.pe_mode = pe_mode
         self.pe_steps = pe_steps
+        self.pe_fold_norm = pe_fold_norm
         self.pe_dim = pe_dim
         self.n_layers = n_layers
 
@@ -108,6 +109,9 @@ class LigandEncoder(nn.Module):
             self.pe_in = nn.Linear(pe_steps, d_model)
         elif pe_mode == "lspe":
             self.pe_in = nn.Linear(pe_steps, pe_dim)
+        
+        self.p_out = nn.Linear(pe_dim, pe_steps)
+        self.Whp = nn.Linear(d_model + pe_steps, d_model)
 
         # --- message passing ---
         # In lspe mode the content conv consumes [h || p], so its input widens.
@@ -159,6 +163,15 @@ class LigandEncoder(nn.Module):
             if p is not None:
                 p_new = self.convs_p[i](p, atom_edge_index, encoded_bonds)
                 p = p + self.dropout(torch.tanh(p_new))            # position: tanh
+        
+        if p is not None:
+            p_c = self.p_out(self.dropout(p))
+            
+            if self.pe_fold_norm:
+                p_c = p_c - global_mean_pool(p_c, mol_batch)[mol_batch]
+                p_c = p_c / global_add_pool(p_c ** 2, mol_batch).sqrt()[mol_batch].clamp(min=1e-6)
+
+            atom_h = self.Whp(self.dropout(torch.cat([atom_h, p_c], dim = -1)))
 
         attn = pyg_softmax(self.attn_pool(atom_h).squeeze(-1), mol_batch)
         mol_pool = global_add_pool(atom_h * attn.unsqueeze(-1), mol_batch)
