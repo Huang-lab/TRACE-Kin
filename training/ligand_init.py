@@ -49,7 +49,9 @@ def atom_features(atom):
                       Chem.rdchem.HybridizationType.SP, Chem.rdchem.HybridizationType.SP2,
                       Chem.rdchem.HybridizationType.SP3, Chem.rdchem.HybridizationType.SP3D,
                       Chem.rdchem.HybridizationType.SP3D2, 'other'])
-    # encoding += one_of_k_encoding_unk(atom.GetFormalCharge(), [0,-1,1,2,-100]) 
+
+    #encoding += one_of_k_encoding_unk(atom.GetFormalCharge(), [0,-1,1,2,-100]) 
+
     # encoding += one_of_k_encoding_unk(atom.GetNumRadicalElectrons(), [0,1,2,-100]) 
     encoding += [atom.GetIsAromatic()]
     # encoding += [atom.IsInRing()]
@@ -321,8 +323,6 @@ class MoleculeGraphDataset():
            
         elif type=='atom_full_feature':
             atom_feature = self.mol_full_feature(mol)
-            #extra_feat = self.mol_extra_feature(mol)
-            #atom_feature = np.concatenate((base_feat, extra_feat), axis=1)
         else:
             raise Exception('atom_type or atom_feature')
         bond_feature = self.bond_feature(mol)
