@@ -43,6 +43,11 @@ from training.trainer import Trainer
 # based on the config's ``model_version`` field.
 from models.trace_kin import TraceKinV7
 
+# Architectures this tree can actually build, and the ones whose code was
+# deleted in dfb7ab3a but whose configs and checkpoints still exist.
+AVAILABLE_MODEL_VERSIONS = {"v7"}
+REMOVED_MODEL_VERSIONS = {"v1", "v4", "v5", "v5t", "v6c"}
+
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -97,8 +102,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mclassification_task", type=int, default=0)
 
     # Architecture / training behaviour switches
-    parser.add_argument("--model_version", type=str, choices=["v1", "v4", "v5", "v5t", "v6c", "v7"], default=None,
-                        help="Override config 'model_version'. Defaults to whatever the config file specifies.")
+    parser.add_argument("--model_version", type=str, choices=sorted(AVAILABLE_MODEL_VERSIONS), default=None,
+                        help="Override config 'model_version'. Defaults to whatever the config file specifies. "
+                             f"{sorted(REMOVED_MODEL_VERSIONS)} were removed in dfb7ab3a and can no longer be built.")
     parser.add_argument("--use_swa", action="store_true", default=False,
                         help="Enable SWA (overrides config swa.use_swa).")
     parser.add_argument("--no_swa", action="store_true", default=False,
@@ -715,114 +721,21 @@ def build_model(model_config: dict, mol_deg, prot_deg, device: str,
     so the per-residue mean/std lookup happens inside the GPU forward pass
     without per-protein duplication.
     """
-    version = model_config.get("model_version", "v1")
+    version = model_config.get("model_version", "v7")
     params = model_config["params"]
     tasks = model_config["tasks"]
 
-    common_kwargs = dict(
-        mol_in_channels=params["mol_in_channels"],
-        prot_in_channels=params["prot_in_channels"],
-        prot_evo_channels=params["prot_evo_channels"],
-        hidden_channels=params["hidden_channels"],
-        pre_layers=params["pre_layers"],
-        post_layers=params["post_layers"],
-        aggregators=params["aggregators"],
-        scalers=params["scalers"],
-        total_layer=params["total_layer"],
-        K=params["K"],
-        heads=params["heads"],
-        dropout=params.get("dropout", 0),
-        dropout_attn_score=params.get("dropout_attn_score", 0.2),
-        regression_head=tasks["regression_task"],
-        classification_head=tasks["classification_task"],
-        multiclassification_head=tasks["mclassification_task"],
-        device=device,
-    )
-
-    if version == "v1":
-        model = TraceKinV1(
-            mol_deg, prot_deg,
-            **common_kwargs,
-            use_gated_prot_fusion=params.get("use_gated_prot_fusion", False),
-            deep_regression_head=params.get("deep_regression_head", False),
-            learnable_aux_loss=params.get("learnable_aux_loss", False),
-        )
-    elif version == "v4":
-        model = TraceKinV4(
-            mol_deg, prot_deg,
-            **common_kwargs,
-            chembert_dim=params.get("chembert_dim", 768),
-            pocket_hidden=params.get("pocket_hidden", 64),
-        )
-        if aa_typical_buffers is None:
-            raise ValueError(
-                "v4 requires aa_typical_buffers (computed in preprocess); "
-                "got None. Check that preprocess() ran with model_version='v4'."
-            )
-        model.register_buffer("aa_typical_means", aa_typical_buffers["aa_means"])
-        model.register_buffer("aa_typical_stds", aa_typical_buffers["aa_stds"])
-    elif version == "v5":
-        model = TraceKinV5(
-            mol_deg, prot_deg,
-            prot_evo_channels=params["prot_evo_channels"],
-            d_model=params.get("d_model", 512),
-            n_mamba_layers=params.get("n_mamba_layers", 4),
-            mamba_expand=params.get("mamba_expand", 2),
-            mamba_d_state=params.get("mamba_d_state", 16),
-            mamba_d_conv=params.get("mamba_d_conv", 4),
-            graph_pe_rwse_steps=params.get("graph_pe_rwse_steps", 16),
-            mol_in_channels=params["mol_in_channels"],
-            n_drug_pna_layers=params.get("n_drug_pna_layers", 3),
-            n_cross_heads=params.get("n_cross_heads", 8),
-            chembert_dim=params.get("chembert_dim", 768),
-            dropout=params.get("dropout", 0.1),
-            regression_head=tasks["regression_task"],
-            classification_head=tasks["classification_task"],
-            multiclassification_head=tasks["mclassification_task"],
-            device=device,
-            heads=params.get("heads", 8),
-        )
-    elif version == "v5t":
-        model = TraceKinV5T(
-            mol_deg, prot_deg,
-            prot_evo_channels=params["prot_evo_channels"],
-            d_model=params.get("d_model", 512),
-            n_transformer_layers=params.get("n_transformer_layers", 4),
-            n_self_attn_heads=params.get("n_self_attn_heads", 8),
-            ffn_expand=params.get("ffn_expand", 4),
-            graph_pe_rwse_steps=params.get("graph_pe_rwse_steps", 16),
-            mol_in_channels=params["mol_in_channels"],
-            n_drug_pna_layers=params.get("n_drug_pna_layers", 3),
-            n_cross_heads=params.get("n_cross_heads", 8),
-            chembert_dim=params.get("chembert_dim", 768),
-            dropout=params.get("dropout", 0.1),
-            input_dropout=params.get("input_dropout", 0.15),
-            regression_head=tasks["regression_task"],
-            classification_head=tasks["classification_task"],
-            multiclassification_head=tasks["mclassification_task"],
-            device=device,
-            heads=params.get("heads", 8),
-        )
-    elif version == "v6c":
-        model = TraceKinV6C(
-            mol_deg, prot_deg,
-            prot_evo_channels=params["prot_evo_channels"],
-            d_model=params.get("d_model", 512),
-            n_gat_layers=params.get("n_gat_layers", 3),
-            n_gat_heads=params.get("n_gat_heads", 8),
-            gat_rbf_dim=params.get("gat_rbf_dim", 16),
-            graph_pe_rwse_steps=params.get("graph_pe_rwse_steps", 16),
-            pocket_k=params.get("pocket_k", 64),
-            mol_in_channels=params["mol_in_channels"],
-            n_drug_pna_layers=params.get("n_drug_pna_layers", 3),
-            n_cross_heads=params.get("n_cross_heads", 8),
-            chembert_dim=params.get("chembert_dim", 768),
-            dropout=params.get("dropout", 0.1),
-            regression_head=tasks["regression_task"],
-            classification_head=tasks["classification_task"],
-            multiclassification_head=tasks["mclassification_task"],
-            device=device,
-            heads=params.get("heads", 8),
+    # v1, v4, v5, v5t and v6c were deleted in dfb7ab3a. Their construction
+    # branches lived here and referenced TraceKinV1/V4/V5/V5T/V6C, which are no
+    # longer imported or exported, so reaching one raised NameError rather than
+    # saying what had happened.
+    if version in REMOVED_MODEL_VERSIONS:
+        raise ValueError(
+            f"model_version {version!r} was removed in dfb7ab3a "
+            "('got rid of unused older versions'); only "
+            f"{sorted(AVAILABLE_MODEL_VERSIONS)} can be built from this tree. "
+            "Recover the architecture from that commit's parent if you need to "
+            "reproduce its numbers."
         )
     elif version == "v7":
         model = TraceKinV7(
