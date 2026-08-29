@@ -89,7 +89,8 @@ class LigandEncoder(nn.Module):
 
     def __init__(self, mol_in_channels: int, d_model: int, mol_deg,
                  n_layers: int = 3, heads: int = 8, dropout: float = 0.1,
-                 pe_mode: str = "none", pe_steps: int = 16, pe_dim: int = 16, pe_fold_norm: bool = True):
+                 pe_mode: str = "none", pe_steps: int = 16, pe_dim: int = 16,
+                 pe_fold_norm: bool = True, pe_raw_norm: str = "none"):
         super().__init__()
         if pe_mode not in ("none", "input", "lspe"):
             raise ValueError(f"pe_mode must be none|input|lspe, got {pe_mode!r}")
@@ -98,6 +99,15 @@ class LigandEncoder(nn.Module):
         self.pe_fold_norm = pe_fold_norm
         self.pe_dim = pe_dim
         self.n_layers = n_layers
+        
+        if pe_mode == "none" or pe_raw_norm == "none":
+            self.pe_raw_norm = None
+        elif pe_raw_norm == "batch":
+            self.pe_raw_norm = nn.BatchNorm1d(pe_steps, eps=1e-3)
+        elif pe_raw_norm == "layer":
+            self.pe_raw_norm = nn.LayerNorm(pe_steps)
+        else: 
+            raise ValueError(f"pe_raw_norm must be none|batch|layer, got {pe_raw_norm!r}")
 
         # --- atom / bond featurization (unchanged from the v7 baseline) ---
         self.atom_type_encoder = nn.Embedding(20, d_model)
@@ -149,6 +159,8 @@ class LigandEncoder(nn.Module):
         p = None
         if self.pe_mode != "none":
             pe = atom_rwse(atom_edge_index, atom_h.size(0), self.pe_steps)
+            if self.pe_raw_norm is not None:
+                pe = self.pe_raw_norm(pe)
             if self.pe_mode == "input":
                 atom_h = atom_h + self.pe_in(pe)          # frozen, added once
             else:
@@ -169,7 +181,9 @@ class LigandEncoder(nn.Module):
             
             if self.pe_fold_norm:
                 p_c = p_c - global_mean_pool(p_c, mol_batch)[mol_batch]
-                p_c = p_c / global_add_pool(p_c ** 2, mol_batch).sqrt()[mol_batch].clamp(min=1e-6)
+                nrm = (global_add_pool(p_c ** 2, mol_batch) + 1e-6).sqrt()
+
+                p_c = p_c / nrm[mol_batch]
 
             atom_h = self.Whp(self.dropout(torch.cat([atom_h, p_c], dim = -1)))
 
