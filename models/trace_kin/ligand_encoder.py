@@ -52,11 +52,21 @@ from .pna import PNAConv
 # ---------------------------------------------------------------------------
 
 def atom_rwse(edge_index: torch.Tensor, num_nodes: int, steps: int) -> torch.Tensor:
-    """Canonical RWSE: diag((D^-1 A)^k) for k = 1..steps.  -> (num_nodes, steps)
+    """RWSE: diag((D^-1 A)^k) for k = 2..steps+1.  -> (num_nodes, steps)
 
     Entry (i, k) is the probability that a k-step random walk starting at atom i
     returns to atom i. For an atom in a ring of size r this is ~0 at odd k and
     peaks at k = r, which is what makes it a ring descriptor.
+
+    **The walk starts at k=2, not at the canonical k=1.** A molecular graph has
+    no self-loops, so diag(P) is identically zero and the k=1 channel carried no
+    information; dropping it buys one more step of reach for the same `steps`.
+    The columns are therefore shifted by one relative to the usual RWSE
+    definition and to any number recorded before `4f5c231`: with steps=8 this
+    covers ring sizes 2..9 where it used to cover 1..8. It is not a free change
+    of convention -- it changes the input features of `pe_mode="input"` as much
+    as of `pe_mode="lspe"`, so a checkpoint or a metric from either arm predates
+    it.
 
     A batch of molecules is block-diagonal, so one dense (N, N) covers the whole
     batch and walks cannot cross between molecules. Molecules are small: at
@@ -119,9 +129,17 @@ class LigandEncoder(nn.Module):
             self.pe_in = nn.Linear(pe_steps, d_model)
         elif pe_mode == "lspe":
             self.pe_in = nn.Linear(pe_steps, pe_dim)
-        
-        self.p_out = nn.Linear(pe_dim, pe_steps)
-        self.Whp = nn.Linear(d_model + pe_steps, d_model)
+
+        # The fold-back pair is used only on the lspe path, where `p` exists.
+        # Built unconditionally they are dead weights in the other two modes --
+        # no gradient reaches them, so they stay at initialisation -- and, worse,
+        # they change the state_dict of a `pe_mode="none"` run, so a baseline
+        # checkpoint from before the lspe work no longer loads into a baseline
+        # model. The arm the fold-back was not supposed to touch was the one it
+        # broke.
+        if pe_mode == "lspe":
+            self.p_out = nn.Linear(pe_dim, pe_steps)
+            self.Whp = nn.Linear(d_model + pe_steps, d_model)
 
         # --- message passing ---
         # In lspe mode the content conv consumes [h || p], so its input widens.
