@@ -496,6 +496,7 @@ class TraceKinV7(nn.Module):
         mol_pe_steps: int = 8,
         mol_pe_dim: int = 16,
         mol_pe_fold_norm: bool = True,
+        mol_pe_raw_norm: str = "none",
         n_cross_heads: int = 8,
         chembert_dim: int = 768,
         dropout: float = 0.1,
@@ -592,7 +593,7 @@ class TraceKinV7(nn.Module):
                 mol_in_channels, d_model, mol_deg,
                 n_layers=n_drug_pna_layers, heads=heads, dropout=dropout,
                 pe_mode=mol_pe_mode, pe_steps=mol_pe_steps, pe_dim=mol_pe_dim,
-                pe_fold_norm = mol_pe_fold_norm)
+                pe_fold_norm=mol_pe_fold_norm, pe_raw_norm=mol_pe_raw_norm)
             
         self.mol_context_proj = nn.Linear(chembert_dim, d_model)
 
