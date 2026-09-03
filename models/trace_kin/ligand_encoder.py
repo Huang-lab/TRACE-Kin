@@ -35,7 +35,7 @@ Not carried over from the reference: the auxiliary Laplacian-eigenvector loss on
 `p`. It requires LapPE targets and is reported as a small effect; add it here if
 the LSPE arm shows promise.
 """
-from __future__ import annotations
+from __future__ import annotationshttps://www.nature.com/articles/s42256-026-01283-z
 
 import torch
 import torch.nn as nn
@@ -52,7 +52,7 @@ from .pna import PNAConv
 # ---------------------------------------------------------------------------
 
 def atom_rwse(edge_index: torch.Tensor, num_nodes: int, steps: int) -> torch.Tensor:
-    """Canonical RWSE: diag((D^-1 A)^k) for k = 1..steps.  -> (num_nodes, steps)
+    """Canonical RWSE: diag((D^-1 A)^k) for k = 2..steps.  -> (num_nodes, steps)
 
     Entry (i, k) is the probability that a k-step random walk starting at atom i
     returns to atom i. For an atom in a ring of size r this is ~0 at odd k and
