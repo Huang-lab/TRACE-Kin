@@ -35,7 +35,7 @@ Not carried over from the reference: the auxiliary Laplacian-eigenvector loss on
 `p`. It requires LapPE targets and is reported as a small effect; add it here if
 the LSPE arm shows promise.
 """
-from __future__ import annotationshttps://www.nature.com/articles/s42256-026-01283-z
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
