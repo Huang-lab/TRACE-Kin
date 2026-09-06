@@ -497,6 +497,16 @@ class TraceKinV7(nn.Module):
         mol_pe_dim: int = 16,
         mol_pe_fold_norm: bool = True,
         mol_pe_raw_norm: str = "none",
+        # Ligand backbone: "pna" (LigandEncoder) | "grit" (GRITLigandEncoder).
+        # GRIT keeps its own operating point -- the reference runs 10 layers at
+        # width 64 with ksteps 21, not 3 layers at 512 -- so it takes its own
+        # depth/width/dropout keys instead of inheriting the PNA ones.
+        mol_conv_type: str = "pna",
+        mol_grit_dim: int = 64,
+        mol_grit_layers: int = 10,
+        mol_grit_steps: int = 21,
+        mol_grit_dropout: float = 0.0,
+        mol_grit_attn_dropout: float = 0.2,
         n_cross_heads: int = 8,
         chembert_dim: int = 768,
         dropout: float = 0.1,
@@ -588,13 +598,25 @@ class TraceKinV7(nn.Module):
         # LIGAND ENCODER
         # =====================================================================
         self.mol_pe_mode = mol_pe_mode
-        from .ligand_encoder import LigandEncoder
-        self.drug_encoder = LigandEncoder(
-                mol_in_channels, d_model, mol_deg,
-                n_layers=n_drug_pna_layers, heads=heads, dropout=dropout,
-                pe_mode=mol_pe_mode, pe_steps=mol_pe_steps, pe_dim=mol_pe_dim,
-                pe_fold_norm = mol_pe_fold_norm, 
-                pe_raw_norm = mol_pe_raw_norm)
+        self.mol_conv_type = mol_conv_type
+        if mol_conv_type == "grit":
+            from .grit import GRITLigandEncoder
+            self.drug_encoder = GRITLigandEncoder(
+                mol_in_channels, d_model,
+                n_layers=mol_grit_layers, heads=heads,
+                grit_dim=mol_grit_dim, pe_steps=mol_grit_steps,
+                dropout=mol_grit_dropout, attn_dropout=mol_grit_attn_dropout,
+                pe_raw_norm=mol_pe_raw_norm)
+        elif mol_conv_type != "pna":
+            raise ValueError(f"mol_conv_type must be pna|grit, got {mol_conv_type!r}")
+        else:
+            from .ligand_encoder import LigandEncoder
+            self.drug_encoder = LigandEncoder(
+                    mol_in_channels, d_model, mol_deg,
+                    n_layers=n_drug_pna_layers, heads=heads, dropout=dropout,
+                    pe_mode=mol_pe_mode, pe_steps=mol_pe_steps, pe_dim=mol_pe_dim,
+                    pe_fold_norm = mol_pe_fold_norm, 
+                    pe_raw_norm = mol_pe_raw_norm)
             
         self.mol_context_proj = nn.Linear(chembert_dim, d_model)
 
