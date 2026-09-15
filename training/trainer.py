@@ -16,7 +16,7 @@ else:
 
 class Trainer(object):
     def __init__(self, model, lrate, min_lrate, wdecay, betas, eps, amsgrad, clip, steps_per_epoch, num_epochs, total_iters,
-                warmup_iters=2000, lr_decay_iters=None, schedule_lr=True, regression_weight=1,
+                warmup_iters=2000, warmup_frac=None, lr_decay_iters=None, schedule_lr=True, regression_weight=1,
                 classification_weight=1, multiclassification_weight=1, evaluate_metric='rmse',
                 result_path='', runid=0, device='cuda:0', skip_test_during_train=False,
                 finetune_modules=None, patience=0,
@@ -56,7 +56,14 @@ class Trainer(object):
 
         self.lrate = lrate
         self.min_lrate = min_lrate
-        self.warmup_iters = warmup_iters
+        # warmup_frac, when set, OVERRIDES warmup_iters and scales with the run.
+        # An absolute warmup_iters silently changes its meaning whenever
+        # total_iters moves: at a 33% subsample there are a third as many iters
+        # per epoch, so a fixed 500 becomes 3x the warmup fraction. The playbook
+        # ranks warmup length as the hyperparameter MOST likely to transfer
+        # between tuning rounds, which only holds if the fraction is held fixed.
+        self.warmup_iters = (int(warmup_frac * self.total_iters)
+                             if warmup_frac else warmup_iters)
         # Treat both None and 0 as "use total_iters" so a missing lr_decay_iters
         # in config does not collapse the LR to min_lrate immediately after warmup.
         if lr_decay_iters is None or lr_decay_iters == 0:
