@@ -916,6 +916,13 @@ def train_one_member(args, model_config, swa_block, device, seed,
         raise ValueError("No task selected (--regression_task / --classification_task / --mclassification_task).")
 
     # 8. Trainer.
+    # A config sets the warmup either as an absolute count (warmup_iters) or as a
+    # fraction of the run (warmup_frac, which overrides warmup_iters in Trainer).
+    # warmup_frac-only configs have no warmup_iters, so it must not be a hard lookup.
+    opt_cfg = model_config["optimizer"]
+    if "warmup_iters" not in opt_cfg and opt_cfg.get("warmup_frac") is None:
+        raise KeyError("optimizer must set warmup_iters or warmup_frac "
+                       f"(config: {args.config_path})")
     finetune_modules = ast.literal_eval(args.finetune_modules) if args.finetune_modules else None
     engine = Trainer(
         model=model,
@@ -929,7 +936,7 @@ def train_one_member(args, model_config, swa_block, device, seed,
         steps_per_epoch=len(train_loader),
         num_epochs=args.epochs,
         total_iters=None,
-        warmup_iters=model_config["optimizer"]["warmup_iters"],
+        warmup_iters=opt_cfg.get("warmup_iters", 0),   # unused when warmup_frac is set
         warmup_frac=model_config["optimizer"].get("warmup_frac", None),
         lr_decay_iters=model_config["optimizer"]["lr_decay_iters"],
         schedule_lr=model_config["optimizer"]["schedule_lr"],
