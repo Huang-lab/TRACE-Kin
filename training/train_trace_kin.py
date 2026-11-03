@@ -88,7 +88,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--evaluate_epoch", type=int, default=1)
-    parser.add_argument("--lrate", type=float, default=1e-4,
+    parser.add_argument("--lrate", type=float, default=None,
                         help="Optimizer learning rate. Defaults match v1 baseline (1e-4).")
 
     # Task
@@ -1011,7 +1011,11 @@ def main():
         model_config = json.load(f)
     model_config["params"]["prot_evo_channels"] = embedding_dim
     model_config["params"]["chembert_dim"] = chembert_dim
-    model_config["optimizer"]["lrate"] = args.lrate
+    if args.lrate is not None:
+        model_config["optimizer"]["lrate"] = args.lrate
+    else: 
+        model_config["optimizer"].setdefault('lrate', 1e-4)
+
     model_config["tasks"]["regression_task"] = args.regression_task
     model_config["tasks"]["classification_task"] = args.classification_task
     model_config["tasks"]["mclassification_task"] = args.mclassification_task
