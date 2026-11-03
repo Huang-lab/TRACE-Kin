@@ -507,6 +507,7 @@ class TraceKinV7(nn.Module):
         mol_grit_steps: int = 21,
         mol_grit_dropout: float = 0.0,
         mol_grit_attn_dropout: float = 0.2,
+        mol_grit_ref_init: bool = False,   # True = reference xavier_normal init (grit.py)
         n_cross_heads: int = 8,
         chembert_dim: int = 768,
         dropout: float = 0.1,
@@ -606,7 +607,7 @@ class TraceKinV7(nn.Module):
                 n_layers=mol_grit_layers, heads=heads,
                 grit_dim=mol_grit_dim, pe_steps=mol_grit_steps,
                 dropout=mol_grit_dropout, attn_dropout=mol_grit_attn_dropout,
-                pe_raw_norm=mol_pe_raw_norm)
+                pe_raw_norm=mol_pe_raw_norm, ref_init=mol_grit_ref_init)
         elif mol_conv_type != "pna":
             raise ValueError(f"mol_conv_type must be pna|grit, got {mol_conv_type!r}")
         else:

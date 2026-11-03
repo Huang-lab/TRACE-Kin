@@ -29,6 +29,29 @@ edge representations are carried and updated across layers. So this is not a
 `conv` and cannot sit behind a make_conv() registry -- it replaces the layer
 stack outright. Bond types are still used: they are added into the initial pair
 embedding at the positions that correspond to real bonds.
+
+FIDELITY TO THE REFERENCE (LiamMa/GRIT, `zinc-GRIT-RRWP.yaml`)
+--------------------------------------------------------------
+Matches the reference: the attention score order (Q+K, x E_w, signed sqrt,
++ E_b, ReLU), clamp, per-destination softmax, VeRow edge enhancement, degree
+scaler, BN placement, FFN, 21 RRWP channels [I, A, ..., A^20], and attention
+over ALL atom pairs inside a molecule (`full_attn: True`).
+
+Aligned with the reference in this revision (see GRIT_REVIEW_TODO.md):
+  * RRWP orientation: edge (src=j, dst=i) carries [(D^-1 A)^k]_ij, i.e. the walk
+    probability from the QUERY atom to the KEY atom (rrwp.py:83).
+  * Pairs: every pair inside a molecule, zero RRWP beyond `steps` hops or across
+    fragments, instead of only pairs reachable within `steps` hops.
+  * RRWP is computed per molecule on a padded (B, n_max, n_max) tensor rather
+    than on one dense (sum n)^2 matrix for the whole batch.
+  * No bias on K, V and the pair projection (grit_layer.py:64-66, rrwp_encoder.py:111).
+  * Dropout placement: on the attention output before the degree scaler and on
+    the edge update before O_e; none on the FFN output (grit_layer.py:267-300).
+  * `ref_init=True` reproduces the reference's xavier_normal initialisation.
+    It is OFF by default so existing GRIT runs keep their initialisation.
+
+Deliberate departures: atom features beyond the atom type, 5 bond types, no
+graph-level head (atom_h is lifted to d_model for pocket attention / MMCAF).
 """
 from __future__ import annotations
 
@@ -44,49 +67,66 @@ from torch_geometric.utils import softmax as pyg_softmax
 # --------------------------------------------------------------------------- #
 # RRWP                                                                          #
 # --------------------------------------------------------------------------- #
-def atom_rrwp(edge_index: torch.Tensor, num_nodes: int, steps: int
+def atom_rrwp(edge_index: torch.Tensor, batch: torch.Tensor, steps: int
               ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Relative random-walk probabilities.
+    """Relative random-walk probabilities, one molecule at a time.
+
+    Parameters
+    ----------
+    edge_index  (2, E)  bonds, both directions, global atom ids
+    batch       (N,)    molecule id of every atom
+    steps               number of RRWP channels: [I, A, A^2, ..., A^(steps-1)]
+                        with A = D^-1 A_adj (row-normalised)
 
     Returns
     -------
-    node_pe    (N, steps)   diag((D^-1 A)^k) for k = 2..steps+1  -- identical to
-                            atom_rwse, so the two arms stay comparable.
-    pair_attr  (P, steps)   [(D^-1 A)^k]_ij for the retained pairs.
-    pair_index (2, P)       the retained pairs, dst-major ordering not assumed.
+    node_pe    (N, steps-2)   diag((D^-1 A)^k) for k = 2..steps-1 -- the same
+                              signal atom_rwse feeds the PNA arm. The identity
+                              and k=1 diagonals are constant (1 and 0) and are
+                              omitted; the node projection's bias plays the
+                              role of the reference's identity channel.
+    pair_attr  (P, steps)     [(D^-1 A)^k]_ij for EVERY pair inside a molecule.
+    pair_index (2, P)         (src, dst) = (j, i), so edge j -> i carries the
+                              walk probability from i to j, as in the reference
+                              (rrwp.py:83, "need to switch the order of row and
+                              col"). Sorted dst-major.
 
-    Pairs are those with nonzero RRWP at any k, plus self-loops. A batch is
-    block diagonal and a random walk cannot leave its molecule, so the nonzero
-    pattern is automatically within-graph -- no `batch` vector needed. Pairs
-    further apart than `steps` hops carry no signal and are dropped, which is
-    what keeps P small.
+    Attention is over all pairs, like the reference's `full_attn: True`: pairs
+    farther apart than `steps` hops, or in different fragments of one ligand,
+    carry an all-zero RRWP vector but still take part in the softmax. Zeros here
+    are informative -- "no walk of that length" is how hop distance is encoded.
+
+    The adjacency is built on a padded (B, n_max, n_max) tensor, so memory grows
+    with B * n_max^2 rather than (sum n)^2.
     """
-    A = torch.zeros(num_nodes, num_nodes, device=edge_index.device)
-    A[edge_index[0], edge_index[1]] = 1.0
-    deg = A.sum(dim=1).clamp(min=1)
-    P = A / deg.unsqueeze(1)
+    device = edge_index.device
+    N = batch.numel()
+    counts = torch.bincount(batch)                          # atoms per molecule
+    B, n_max = counts.numel(), int(counts.max())
+    ptr = torch.cumsum(counts, 0) - counts                  # first global id of each molecule
+    local = torch.arange(N, device=device) - ptr[batch]     # atom index inside its molecule
+
+    src, dst = edge_index[0], edge_index[1]
+    A = torch.zeros(B, n_max, n_max, device=device)
+    A[batch[src], local[src], local[dst]] = 1.0
+    P = A / A.sum(dim=-1, keepdim=True).clamp(min=1)
 
     # Reference add_full_rrwp: [I, A, A^2, ..., A^(K-1)] with add_identity=True.
-    # The identity marks the self-pair and A^1 marks a direct bond -- the two
-    # most informative PAIR channels. They are useless on the diagonal (always
-    # 1 and 0), which is why atom_rwse skips them, but dropping them from the
-    # pair representation loses exactly the signal GRIT attends over.
-    eye = torch.eye(num_nodes, device=A.device)
+    eye = torch.eye(n_max, device=device).expand(B, n_max, n_max)
     mats = [eye, P]
     M = P
     for _ in range(steps - 2):
-        M = M @ P
+        M = torch.bmm(M, P)
         mats.append(M)
+    stacked = torch.stack(mats, dim=-1)                     # (B, n_max, n_max, steps)
 
-    stacked = torch.stack(mats, dim=-1)          # (N, N, steps)
-    # Node PE keeps the k >= 2 slice so it stays identical to atom_rwse and the
-    # PNA and GRIT arms share the same positional signal.
-    node_pe = torch.stack([m.diagonal() for m in mats[2:]], dim=-1)   # (N, steps-2)
+    node_pe = stacked[batch, local, local][:, 2:]           # (N, steps-2)
 
-    occupied = stacked.abs().sum(-1) > 0
-    occupied = occupied | torch.eye(num_nodes, dtype=torch.bool, device=A.device)
-    pair_index = occupied.nonzero(as_tuple=False).t().contiguous()  # (2, P)
-    pair_attr = stacked[pair_index[0], pair_index[1]]               # (P, steps)
+    in_mol = torch.arange(n_max, device=device)[None, :] < counts[:, None]    # (B, n_max)
+    pair_mask = in_mol[:, :, None] & in_mol[:, None, :]
+    b, i, j = pair_mask.nonzero(as_tuple=True)              # lexicographic (b, i, j)
+    pair_attr = stacked[b, i, j]                            # [(D^-1 A)^k]_ij
+    pair_index = torch.stack([ptr[b] + j, ptr[b] + i])      # src = j, dst = i
     return node_pe, pair_attr, pair_index
 
 
@@ -115,7 +155,7 @@ class GRITLayer(nn.Module):
                  dropout: float = 0.0, attn_dropout: float = 0.2,
                  ffn_mult: int = 2,
                  clamp: Optional[float] = 5.0, edge_enhance: bool = True,
-                 act: Optional[str] = "relu") -> None:
+                 act: Optional[str] = "relu", ref_init: bool = False) -> None:
         super().__init__()
         self.clamp = clamp
         self.edge_enhance = edge_enhance
@@ -128,8 +168,9 @@ class GRITLayer(nn.Module):
         self.h, self.dh = heads, d_model // heads
 
         self.WQ = nn.Linear(d_model, d_model)
-        self.WK = nn.Linear(d_model, d_model)
-        self.WV = nn.Linear(d_model, d_model)
+        # K and V carry no bias in the reference (cfg.attn.use_bias: False, grit_layer.py:64-66)
+        self.WK = nn.Linear(d_model, d_model, bias=False)
+        self.WV = nn.Linear(d_model, d_model, bias=False)
         self.WEw = nn.Linear(e_dim, d_model)      # multiplicative pair term
         self.WEb = nn.Linear(e_dim, d_model)      # additive pair term
         self.wA = nn.Parameter(torch.randn(heads, self.dh) * (self.dh ** -0.5))
@@ -157,6 +198,30 @@ class GRITLayer(nn.Module):
         # residual/FFN path and attn_dropout: 0.2 on the attention weights.
         self.drop = nn.Dropout(dropout)
         self.attn_drop = nn.Dropout(attn_dropout)
+
+        self.e_dim = e_dim
+        if ref_init:
+            self._reference_init()
+
+    def _reference_init(self) -> None:
+        """Initialisation of the reference (grit_layer.py:67-73, 227-228).
+
+        Weights only; biases keep the PyTorch default, as in the reference.
+        """
+        d = self.h * self.dh
+        for lin in (self.WQ, self.WK, self.WV):
+            nn.init.xavier_normal_(lin.weight)
+        # The reference fuses E_w and E_b in one Linear(e_dim, 2d): fan_in e_dim, fan_out 2d.
+        std_e = (2.0 / (self.e_dim + 2 * d)) ** 0.5
+        nn.init.normal_(self.WEw.weight, 0.0, std_e)
+        nn.init.normal_(self.WEb.weight, 0.0, std_e)
+        # Aw is (dh, H, 1) there: fan_in = H, fan_out = dh.
+        nn.init.normal_(self.wA, 0.0, (2.0 / (self.h + self.dh)) ** 0.5)
+        # deg_coef is (1, d, 2): fan_in = 2d, fan_out = 2. Both coefficients start
+        # random (not 1 and 0), so the attention output is scaled at initialisation.
+        std_d = (2.0 / (2 * d + 2)) ** 0.5
+        nn.init.normal_(self.theta1, 0.0, std_d)
+        nn.init.normal_(self.theta2, 0.0, std_d)
 
     def forward(self, x: torch.Tensor, e: torch.Tensor,
                 pair_index: torch.Tensor, log_deg: torch.Tensor
@@ -201,13 +266,18 @@ class GRITLayer(nn.Module):
 
         agg = agg.reshape(N, H * DH)
 
+        # Dropout placement as in the reference (grit_layer.py:267 and :277): on the
+        # attention output BEFORE the degree scaler and on the edge update BEFORE
+        # O_e. The FFN output is not dropped out (only its hidden layer, :299).
+        agg = self.drop(agg)
+
         # degree scaler, then node residual
         agg = self.theta1 * agg + self.theta2 * agg * log_deg
-        x = self.bn_x1(x + self.drop(self.out_x(agg)))
-        x = self.bn_x2(x + self.drop(self.ffn(x)))
+        x = self.bn_x1(x + self.out_x(agg))
+        x = self.bn_x2(x + self.ffn(x))
 
         # pair residual
-        e = self.bn_e(e + self.drop(self.out_e(e_hat.reshape(-1, H * DH))))
+        e = self.bn_e(e + self.out_e(self.drop(e_hat.reshape(-1, H * DH))))
         return x, e
 
 
@@ -253,7 +323,8 @@ class GRITLigandEncoder(nn.Module):
                  pe_steps: int = 21, dropout: float = 0.0,
                  attn_dropout: float = 0.2, pe_raw_norm: str = "none",
                  clamp: Optional[float] = 5.0, edge_enhance: bool = True,
-                 act: Optional[str] = "relu", **_ignored) -> None:
+                 act: Optional[str] = "relu", ref_init: bool = False,
+                 **_ignored) -> None:
         super().__init__()
         if pe_steps < 3:
             raise ValueError("pe_steps must be >= 3 (identity, k=1, and k>=2)")
@@ -277,13 +348,19 @@ class GRITLigandEncoder(nn.Module):
             raise ValueError(f"pe_raw_norm must be none|batch|layer, got {pe_raw_norm!r}")
 
         self.node_pe_in = nn.Linear(pe_steps - 2, grit_dim)   # RRWP diagonal, k>=2
-        self.pair_pe_in = nn.Linear(pe_steps, e_dim)          # full RRWP incl. I and k=1
+        # No bias, as in the reference (rrwp_encoder.py:111): pairs with no walk keep an
+        # exactly zero embedding before the bond embedding is added.
+        self.pair_pe_in = nn.Linear(pe_steps, e_dim, bias=False)  # full RRWP incl. I and k=1
 
         self.layers = nn.ModuleList([
             GRITLayer(grit_dim, e_dim, heads=heads, dropout=dropout,
                       attn_dropout=attn_dropout, clamp=clamp,
-                      edge_enhance=edge_enhance, act=act)
+                      edge_enhance=edge_enhance, act=act, ref_init=ref_init)
             for _ in range(n_layers)])
+
+        if ref_init:                                  # rrwp_encoder.py:75,128
+            nn.init.xavier_uniform_(self.node_pe_in.weight)
+            nn.init.xavier_uniform_(self.pair_pe_in.weight)
 
         # Lift to the width net_v7 expects for pocket attention / MMCAF.
         self.out_proj = nn.Linear(grit_dim, d_model)
@@ -293,7 +370,7 @@ class GRITLigandEncoder(nn.Module):
         N = mol_x_feat.size(0)
         atom_h = self.atom_type_encoder(mol_x.squeeze(-1)) + self.atom_feat_encoder(mol_x_feat)
 
-        node_pe, pair_attr, pair_index = atom_rrwp(atom_edge_index, N, self.pe_steps)
+        node_pe, pair_attr, pair_index = atom_rrwp(atom_edge_index, mol_batch, self.pe_steps)
         if self.pe_norm is not None:
             node_pe = self.pe_norm(node_pe)
             pair_attr = self.pair_norm(pair_attr)
