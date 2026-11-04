@@ -453,6 +453,46 @@ class MultiScalePCER(nn.Module):
         return pcer_pool, scale_weights
 
 
+class PocketScorer(nn.Module):
+    """Per-residue pocket score where residues compete for each ligand atom.
+
+    The legacy score (``MultiHeadCrossAttention`` with residues as queries, then
+    ``attn.mean(dim=(1, 3))``) is constant: the softmax runs over ligand atoms,
+    so every residue's row sums to 1 and its mean over atoms is exactly
+    1 / (padded atom count). Top-K over a constant picks residues by float
+    noise, and the scorer receives no gradient (see tests/test_pocket_score.py).
+
+    Here the softmax runs over the *residue* axis instead: every ligand atom
+    distributes one unit of attention across the residues, and the score of a
+    residue is the mean of what it receives over (non-padded) atoms and heads.
+    The result is a distribution over residues: non-negative, zero at padding,
+    sums to 1 per sample. No dropout is applied -- this attention is a
+    selection signal, not a regularised feature map.
+    """
+
+    def __init__(self, d_model: int, n_heads: int = 8):
+        super().__init__()
+        assert d_model % n_heads == 0
+        self.n_heads = n_heads
+        self.d_k = d_model // n_heads
+        self.W_Q = nn.Linear(d_model, d_model)
+        self.W_K = nn.Linear(d_model, d_model)
+
+    def forward(self, prot_h: torch.Tensor, atom_h: torch.Tensor,
+                prot_mask: torch.Tensor, atom_mask: torch.Tensor) -> torch.Tensor:
+        """prot_h (B, L, D), atom_h (B, A, D), masks (B, L) / (B, A) -> (B, L)."""
+        B, L, _ = prot_h.shape
+        A = atom_h.size(1)
+        Q = self.W_Q(prot_h).view(B, L, self.n_heads, self.d_k).transpose(1, 2)
+        K = self.W_K(atom_h).view(B, A, self.n_heads, self.d_k).transpose(1, 2)
+        logits = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)  # (B,H,L,A)
+        logits = logits.masked_fill(~prot_mask[:, None, :, None], float('-inf'))
+        w = F.softmax(logits, dim=2)                       # over residues
+        w = w * atom_mask[:, None, None, :].to(w.dtype)    # drop padded atoms
+        n_atoms = atom_mask.sum(dim=-1, keepdim=True).clamp(min=1).to(w.dtype)
+        return w.mean(dim=1).sum(dim=-1) / n_atoms         # (B, L), sums to 1
+
+
 # ---------------------------------------------------------------------------
 # Main model
 # ---------------------------------------------------------------------------
@@ -483,6 +523,14 @@ class TraceKinV7(nn.Module):
         pocket_k: int = 64,
         pcer_k_catalytic: int = 16,
         pcer_k_pocket: int = 64,
+        # Pocket scoring. "legacy" keeps the original behaviour bit-for-bit
+        # (constant score, see PocketScorer). "residue_softmax" scores residues
+        # with PocketScorer. pocket_soft_gate additionally multiplies the
+        # selected pocket features by their own (non-detached) score, which is
+        # the only path that lets the loss train the scorer -- top-K indices
+        # carry no gradient and the PCER copy of the score is detached.
+        pocket_score_mode: str = "legacy",
+        pocket_soft_gate: bool = False,
         use_mutation_gate: bool = True,
         use_graph_transformer: bool = True,
         n_pred_heads: int = 3,
@@ -545,6 +593,16 @@ class TraceKinV7(nn.Module):
         self.d_model = d_model
         self.prot_evo_channels = prot_evo_channels
         self.pocket_k = pocket_k
+        if pocket_score_mode not in ("legacy", "residue_softmax"):
+            raise ValueError(
+                f"pocket_score_mode must be 'legacy' or 'residue_softmax', "
+                f"got {pocket_score_mode!r}")
+        if pocket_soft_gate and pocket_score_mode == "legacy":
+            raise ValueError(
+                "pocket_soft_gate needs pocket_score_mode='residue_softmax': "
+                "the legacy score is constant, so gating by it is a no-op")
+        self.pocket_score_mode = pocket_score_mode
+        self.pocket_soft_gate = pocket_soft_gate
         self.use_mutation_gate = use_mutation_gate
         self.regression_head = regression_head
         self.classification_head = classification_head
@@ -566,7 +624,10 @@ class TraceKinV7(nn.Module):
             n_global_heads=n_global_heads, rbf_dim=gat_rbf_dim, dropout=dropout)
 
         # Pocket identification cross-attention (structure stream)
-        self.pocket_cross_attn = MultiHeadCrossAttention(d_model, n_cross_heads, dropout)
+        if pocket_score_mode == "legacy":
+            self.pocket_cross_attn = MultiHeadCrossAttention(d_model, n_cross_heads, dropout)
+        else:
+            self.pocket_scorer = PocketScorer(d_model, n_cross_heads)
 
         # MMCAF at pocket level (structure stream)
         self.mmcaf_prot = MultiHeadCrossAttention(d_model, n_cross_heads, dropout)
@@ -712,11 +773,17 @@ class TraceKinV7(nn.Module):
         # =================================================================
         # POCKET IDENTIFICATION (Structure Stream)
         # =================================================================
-        _, pocket_attn = self.pocket_cross_attn(
-            prot_h_dense, atom_h_dense, atom_h_dense,
-            query_mask=prot_mask, key_mask=atom_mask)
-        # Per-residue pocket score: mean over heads and ligand atoms
-        pocket_score = pocket_attn.mean(dim=(1, 3))  # (B, L_prot)
+        if self.pocket_score_mode == "legacy":
+            _, pocket_attn = self.pocket_cross_attn(
+                prot_h_dense, atom_h_dense, atom_h_dense,
+                query_mask=prot_mask, key_mask=atom_mask)
+            # Per-residue pocket score: mean over heads and ligand atoms.
+            # NOTE: constant (1 / padded atoms) -- the softmax is over atoms. Kept
+            # only so existing runs stay reproducible; see PocketScorer.
+            pocket_score = pocket_attn.mean(dim=(1, 3))  # (B, L_prot)
+        else:
+            pocket_score = self.pocket_scorer(
+                prot_h_dense, atom_h_dense, prot_mask, atom_mask)  # (B, L_prot)
         pocket_score = pocket_score.masked_fill(~prot_mask, 0.0)
 
         # =================================================================
@@ -728,6 +795,12 @@ class TraceKinV7(nn.Module):
             prot_h_dense, 1,
             pocket_idx.unsqueeze(-1).expand(-1, -1, D))
         pocket_dense_mask = torch.gather(prot_mask, 1, pocket_idx)
+        if self.pocket_soft_gate:
+            # Relative score in (0, 1]: the top residue keeps weight 1. This
+            # is the differentiable use of the score that trains the scorer.
+            sel_score = torch.gather(pocket_score, 1, pocket_idx)       # (B, K)
+            sel_gate = sel_score / sel_score.max(dim=-1, keepdim=True)[0].clamp(min=1e-12)
+            pocket_dense = pocket_dense * sel_gate.unsqueeze(-1)
 
         pocket_attended, mmcaf_prot_attn = self.mmcaf_prot(
             pocket_dense, atom_h_dense, atom_h_dense,
@@ -762,10 +835,18 @@ class TraceKinV7(nn.Module):
 
         # Mutation-aware gating: modulate pocket scores by per-residue
         # mutation sensitivity learned from raw PLM embeddings
+        mut_gate_dense = None
         if self.use_mutation_gate:
             mut_gate_flat = self.mut_gate(raw_normed)  # (N, 1)
             mut_gate_dense, _ = to_dense_batch(mut_gate_flat.squeeze(-1), prot_batch)
+        if mut_gate_dense is not None:
             pcer_score = pcer_score * mut_gate_dense
+        if self.pocket_score_mode != "legacy":
+            # MultiScalePCER applies a softmax to its score. Scores are a
+            # distribution (~1/L each), which a raw softmax flattens to uniform;
+            # in log space the softmax recovers weights proportional to
+            # score (* gate), and topk order is unchanged.
+            pcer_score = torch.log(pcer_score.clamp(min=1e-12))
 
         pcer_pool, scale_weights = self.pcer(raw_dense, pcer_score, prot_mask)
 
